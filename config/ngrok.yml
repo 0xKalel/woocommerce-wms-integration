@@ -1,0 +1,27 @@
+version: "2"
+authtoken_from_env: true
+log_level: info
+log_format: json
+log: /dev/stdout
+
+tunnels:
+  wordpress:
+    proto: http
+    addr: wordpress:80
+    hostname_binding: false
+    inspect: true
+    schemes: [https]
+    bind_tls: true
+    
+  # Alternative tunnel for testing different configurations
+  wordpress-insecure:
+    proto: http
+    addr: wordpress:80
+    hostname_binding: false
+    inspect: true
+    schemes: [http, https]
+    bind_tls: false
+
+console_ui: true
+console_ui_color: transparent
+web_addr: 0.0.0.0:4040

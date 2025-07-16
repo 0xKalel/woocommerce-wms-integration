@@ -1,0 +1,25 @@
+FROM wordpress:cli
+
+# Install cron and bash
+USER root
+RUN apk update && apk add --no-cache dcron bash
+
+# Create log directories with proper permissions
+RUN mkdir -p /var/log/cron /var/log/wp-cron \
+    && chown -R www-data:www-data /var/log/cron /var/log/wp-cron
+
+# Copy cron runner script
+COPY scripts/cron-runner.sh /usr/local/bin/cron-runner.sh
+RUN chmod +x /usr/local/bin/cron-runner.sh
+
+# Set up crontab for www-data user
+RUN echo "* * * * * /usr/local/bin/cron-runner.sh" | crontab -u www-data -
+
+# Create a simple startup script
+RUN echo '#!/bin/bash' > /usr/local/bin/start-cron.sh && \
+    echo 'echo "Starting cron daemon..."' >> /usr/local/bin/start-cron.sh && \
+    echo '/usr/sbin/crond -f -d 0' >> /usr/local/bin/start-cron.sh && \
+    chmod +x /usr/local/bin/start-cron.sh
+
+# Start cron daemon directly
+CMD ["/usr/local/bin/start-cron.sh"]

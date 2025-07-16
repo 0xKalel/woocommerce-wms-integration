@@ -1,0 +1,142 @@
+services:
+  wordpress:
+    user: "${UID:-1000}:${GID:-1000}"
+    image: wordpress:latest
+    ports:
+      - "8000:80"
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: ${MYSQL_USER:-wordpress}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD:-wordpress}
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE:-wordpress}
+      WORDPRESS_CONFIG_EXTRA: |
+        define('WP_DEBUG', ${WP_DEBUG:-true});
+        define('WP_DEBUG_LOG', ${WP_DEBUG_LOG:-true});
+        define('WP_DEBUG_DISPLAY', ${WP_DEBUG_DISPLAY:-false});
+        define('WP_DEBUG_LOG_DIR', '/var/www/html/wp-content/logs/');
+        define('WP_CONTENT_DIR', '/var/www/html/wp-content');
+        @ini_set('error_log', WP_CONTENT_DIR . '/logs/php_errors.log');
+        
+        // Webhook development settings
+        if (getenv('NGROK_URL')) {
+            define('WC_WMS_WEBHOOK_DEV_URL', getenv('NGROK_URL'));
+        }
+        
+        // Disable WordPress built-in cron in favor of system cron
+        define('DISABLE_WP_CRON', true);
+    volumes:
+      - ./custom-php.ini:/usr/local/etc/php/conf.d/custom-php.ini
+      - wordpress_data:/var/www/html
+      - ./wms:/var/www/html/wp-content/plugins/wc-wms-integration
+      - ./uploads:/var/www/html/wp-content/uploads
+      - ./logs/wordpress:/var/www/html/wp-content/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-wordpress}
+      MYSQL_USER: ${MYSQL_USER:-wordpress}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-wordpress}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpassword}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+    restart: unless-stopped
+
+  wpcli:
+    user: "${UID:-1000}:${GID:-1000}"
+    image: wordpress:cli
+    volumes:
+      - wordpress_data:/var/www/html
+      - ./wms:/var/www/html/wp-content/plugins/wc-wms-integration
+      - ./uploads:/var/www/html/wp-content/uploads
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: ${MYSQL_USER:-wordpress}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD:-wordpress}
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE:-wordpress}
+    depends_on:
+      db:
+        condition: service_healthy
+      wordpress:
+        condition: service_started
+    profiles:
+      - cli
+
+  # WordPress Cron Service
+  cron:
+    build:
+      context: .
+      dockerfile: Dockerfile.cron
+    volumes:
+      - wordpress_data:/var/www/html
+      - ./wms:/var/www/html/wp-content/plugins/wc-wms-integration
+      - ./uploads:/var/www/html/wp-content/uploads
+      - ./logs/cron:/var/log/cron
+      - ./scripts/cron-runner.sh:/usr/local/bin/cron-runner.sh:ro
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: ${MYSQL_USER:-wordpress}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD:-wordpress}
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE:-wordpress}
+    depends_on:
+      db:
+        condition: service_healthy
+      wordpress:
+        condition: service_started
+    restart: unless-stopped
+
+  # Development tools (optional)
+  phpmyadmin:
+    image: phpmyadmin/phpmyadmin
+    ports:
+      - "8080:80"
+    environment:
+      PMA_HOST: db
+      PMA_USER: ${MYSQL_USER:-wordpress}
+      PMA_PASSWORD: ${MYSQL_PASSWORD:-wordpress}
+    depends_on:
+      - db
+    profiles:
+      - dev-tools
+
+  # ngrok setup for webhook testing
+  ngrok:
+    image: ngrok/ngrok:latest
+    ports:
+      - "4040:4040"  # ngrok web interface
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    command: http wordpress:80 --log=stdout
+    depends_on:
+      - wordpress
+    profiles:
+      - webhook-testing
+    restart: unless-stopped
+
+  # ngrok URL monitor service
+  ngrok-monitor:
+    image: curlimages/curl:latest
+    volumes:
+      - ./scripts/webhook:/scripts:ro
+      - ./logs/webhook:/logs
+    environment:
+      - NGROK_API_URL=http://ngrok:4040/api
+      - WEBHOOK_LOG_DIR=/logs
+    entrypoint: ["/scripts/monitor-ngrok.sh"]
+    depends_on:
+      - ngrok
+    profiles:
+      - webhook-testing
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  wordpress_data:
