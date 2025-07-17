@@ -228,14 +228,40 @@ class WC_WMS_Product_Service implements WC_WMS_Product_Service_Interface {
     
     /**
      * Find WooCommerce product by name
+     * 
+     * @param string $name Product name to search for
+     * @return WC_Product|null Found product or null if not found
+     * @throws Exception When search parameters are invalid
      */
-    public function findWooCommerceProductByName(string $name): ?WC_Product {
+    public function findProductByName(string $name): ?WC_Product {
+        if (empty($name)) {
+            throw new Exception('Product name cannot be empty');
+        }
+        
+        $this->client->logger()->debug('Searching for product by name', [
+            'name' => $name
+        ]);
+        
         $products = wc_get_products([
             'name' => $name,
             'limit' => 1
         ]);
         
-        return !empty($products) ? $products[0] : null;
+        $product = !empty($products) ? $products[0] : null;
+        
+        if ($product) {
+            $this->client->logger()->info('Product found by name', [
+                'name' => $name,
+                'product_id' => $product->get_id(),
+                'sku' => $product->get_sku()
+            ]);
+        } else {
+            $this->client->logger()->debug('No product found by name', [
+                'name' => $name
+            ]);
+        }
+        
+        return $product;
     }
     
     /**

@@ -34,9 +34,14 @@ class WC_WMS_Customer_Sync {
      * Get customers from WMS
      * 
      * @param array $params Query parameters
-     * @return array|WP_Error
+     * @return array|WP_Error Customer data or error
+     * @throws Exception When WMS client is unavailable
      */
-    public function get_customers_from_wms($params = []) {
+    public function getCustomersFromWMS(array $params = []): mixed {
+        if (!$this->wmsClient) {
+            throw new Exception('WMS client not available');
+        }
+        
         $this->wmsClient->logger()->info('Getting customers from WMS', ['params' => $params]);
         
         try {
@@ -60,17 +65,22 @@ class WC_WMS_Customer_Sync {
     /**
      * Get single customer from WMS
      * 
-     * @param string $customer_id WMS customer ID
-     * @return array|WP_Error
+     * @param string $customerId WMS customer ID
+     * @return array|WP_Error Customer data or error
+     * @throws Exception When customer ID is invalid
      */
-    public function get_customer_from_wms($customer_id) {
-        $this->wmsClient->logger()->info('Getting customer from WMS', ['customer_id' => $customer_id]);
+    public function getCustomerFromWMS(string $customerId): mixed {
+        if (empty($customerId)) {
+            throw new Exception('Customer ID cannot be empty');
+        }
+        
+        $this->wmsClient->logger()->info('Getting customer from WMS', ['customer_id' => $customerId]);
         
         try {
-            $result = $this->wmsClient->customers()->getCustomer($customer_id);
+            $result = $this->wmsClient->customers()->getCustomer($customerId);
             
             $this->wmsClient->logger()->info('Customer retrieved successfully from WMS', [
-                'customer_id' => $customer_id,
+                'customer_id' => $customerId,
                 'customer_name' => $result['name'] ?? 'unknown'
             ]);
             

@@ -61,16 +61,19 @@ class WC_WMS_Product_Sync {
     
     /**
      * Queue product for sync to WMS
+     * 
+     * @param int|WC_Product $productId Product ID or product object
+     * @return void
+     * @throws Exception When product is not found
      */
-    public function queue_product_sync($product_id) {
-        if (!$product_id) {
-            return;
+    public function queueProductSync($productId): void {
+        if (!$productId) {
+            throw new Exception('Product ID cannot be empty');
         }
         
-        $product = wc_get_product($product_id);
+        $product = is_object($productId) ? $productId : wc_get_product($productId);
         if (!$product) {
-            $this->wmsClient->logger()->error('Product not found for sync', ['product_id' => $product_id]);
-            return;
+            throw new Exception("Product not found for sync: {$productId}");
         }
         
         // Get parent product ID for variations

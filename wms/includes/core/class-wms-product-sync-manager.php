@@ -29,10 +29,78 @@ class WC_WMS_Product_Sync_Manager {
         $this->client = $client;
     }
     
+    // ===== VALIDATION HELPERS =====
+    
+    /**
+     * Validate required string parameter
+     * 
+     * @param string $value Value to validate
+     * @param string $paramName Parameter name for error messages
+     * @throws Exception When value is empty or invalid
+     */
+    private function validateRequiredString(string $value, string $paramName): void {
+        if (empty($value)) {
+            throw new Exception("{$paramName} cannot be empty");
+        }
+    }
+    
+    /**
+     * Validate required array parameter
+     * 
+     * @param array $value Value to validate
+     * @param string $paramName Parameter name for error messages
+     * @throws Exception When value is empty or invalid
+     */
+    private function validateRequiredArray(array $value, string $paramName): void {
+        if (empty($value)) {
+            throw new Exception("{$paramName} cannot be empty");
+        }
+    }
+    
+    // ===== LOGGING HELPERS =====
+    
+    /**
+     * Log function entry with parameters
+     * 
+     * @param string $functionName Name of the function
+     * @param array $parameters Parameters passed to function
+     */
+    private function logFunctionEntry(string $functionName, array $parameters = []): void {
+        $this->client->logger()->debug("Starting {$functionName}", $parameters);
+    }
+    
+    /**
+     * Log function success with results
+     * 
+     * @param string $functionName Name of the function
+     * @param array $results Results from function
+     */
+    private function logFunctionSuccess(string $functionName, array $results = []): void {
+        $this->client->logger()->info("Successfully completed {$functionName}", $results);
+    }
+    
+    /**
+     * Log function error with details
+     * 
+     * @param string $functionName Name of the function
+     * @param Exception $exception Exception that occurred
+     * @param array $context Additional context
+     */
+    private function logFunctionError(string $functionName, Exception $exception, array $context = []): void {
+        $this->client->logger()->error("Error in {$functionName}", array_merge([
+            'error' => $exception->getMessage(),
+            'trace' => $exception->getTraceAsString()
+        ], $context));
+    }
+    
+    // ===== CORE METHODS =====
+    
     /**
      * Ensure product exists - SINGLE SOURCE OF TRUTH
      */
     public function ensureProductExists(array $variant, string $fallbackSku = ''): ?WC_Product {
+        $this->validateRequiredArray($variant, 'Variant data');
+        
         $articleCode = $variant['article_code'] ?? $variant['sku'] ?? $fallbackSku;
         $variantId = $variant['id'] ?? '';
         
@@ -88,14 +156,24 @@ class WC_WMS_Product_Sync_Manager {
     }
     
     /**
-     * Find product by SKU - ENHANCED IMPLEMENTATION
+     * Find product by SKU using multiple search methods
+     * 
+     * This method implements a comprehensive product lookup strategy:
+     * 1. Direct SKU lookup using WooCommerce native function
+     * 2. WMS article code metadata lookup
+     * 3. Parent product lookup for variations
+     * 4. Post title fallback search
+     * 
+     * @param string $sku Product SKU to search for
+     * @return WC_Product|null Found product or null if not found
+     * @throws Exception When SKU is invalid
+     * 
+     * @since 1.0.0
      */
     public function findProductBySku(string $sku): ?WC_Product {
-        if (empty($sku)) {
-            return null;
-        }
+        $this->validateRequiredString($sku, 'SKU');
         
-        $this->client->logger()->debug('=== DIAGNOSTIC: Starting enhanced product lookup ===', [
+        $this->client->logger()->debug('Starting enhanced product lookup', [
             'target_sku' => $sku,
             'sku_length' => strlen($sku),
             'sku_pattern' => preg_replace('/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/', 'UUID', $sku)
@@ -106,7 +184,7 @@ class WC_WMS_Product_Sync_Manager {
         $productId = wc_get_product_id_by_sku($sku);
         if ($productId) {
             $product = wc_get_product($productId);
-            $this->client->logger()->info('✅ SUCCESS: Product found by direct SKU lookup', [
+            $this->client->logger()->info('Product found by direct SKU lookup', [
                 'method' => 'direct_sku',
                 'product_id' => $productId, 
                 'product_name' => $product->get_name(),
@@ -339,9 +417,25 @@ class WC_WMS_Product_Sync_Manager {
     }
     
     /**
-     * Create simple product from variant data
+     * Create simple product from WMS variant data
+     * 
+     * Creates a new WooCommerce simple product from WMS variant data with:
+     * - Basic product information (name, description, SKU)
+     * - Pricing and stock management
+     * - Physical dimensions and weight
+     * - WMS-specific metadata for synchronization
+     * - Product attributes and custom fields
+     * 
+     * @param array $variant WMS variant data containing product information
+     * @param string $sku Optional SKU override, falls back to variant data
+     * @return WC_Product|null Created product or null on failure
+     * @throws Exception When variant data is invalid or product creation fails
+     * 
+     * @since 1.0.0
      */
     public function createSimpleProductFromVariant(array $variant, string $sku = ''): ?WC_Product {
+        $this->validateRequiredArray($variant, 'Variant data');
+        
         try {
             $name = $variant['name'] ?? $variant['description'] ?? $sku ?? 'Unknown Product';
             $finalSku = $sku ?: ($variant['article_code'] ?? $variant['sku'] ?? '');
@@ -350,7 +444,7 @@ class WC_WMS_Product_Sync_Manager {
                 $finalSku = 'WMS_' . ($variant['id'] ?? uniqid());
             }
             
-            $this->client->logger()->info('Creating simple product from variant', [
+            $this->logFunctionEntry('createSimpleProductFromVariant', [
                 'name' => $name,
                 'sku' => $finalSku,
                 'variant_id' => $variant['id'] ?? ''
@@ -408,7 +502,7 @@ class WC_WMS_Product_Sync_Manager {
             
             $product->save();
             
-            $this->client->logger()->info('Created simple product successfully', [
+            $this->logFunctionSuccess('createSimpleProductFromVariant', [
                 'product_id' => $product->get_id(),
                 'sku' => $finalSku,
                 'name' => $name
@@ -417,10 +511,9 @@ class WC_WMS_Product_Sync_Manager {
             return $product;
             
         } catch (Exception $e) {
-            $this->client->logger()->error('Failed to create simple product', [
+            $this->logFunctionError('createSimpleProductFromVariant', $e, [
                 'variant' => $variant,
-                'sku' => $sku,
-                'error' => $e->getMessage()
+                'sku' => $sku
             ]);
             
             return null;

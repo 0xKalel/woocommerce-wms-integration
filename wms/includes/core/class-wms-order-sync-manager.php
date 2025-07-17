@@ -69,34 +69,92 @@ class WC_WMS_Order_Sync_Manager {
         $this->productSyncManager = new WC_WMS_Product_Sync_Manager($client);
     }
     
+    // ===== VALIDATION HELPERS =====
+    
+    /**
+     * Validate required string parameter
+     * 
+     * @param string $value Value to validate
+     * @param string $paramName Parameter name for error messages
+     * @throws Exception When value is empty or invalid
+     */
+    private function validateRequiredString(string $value, string $paramName): void {
+        if (empty($value)) {
+            throw new Exception("{$paramName} cannot be empty");
+        }
+    }
+    
+    /**
+     * Validate required array parameter
+     * 
+     * @param array $value Value to validate
+     * @param string $paramName Parameter name for error messages
+     * @throws Exception When value is empty or invalid
+     */
+    private function validateRequiredArray(array $value, string $paramName): void {
+        if (empty($value)) {
+            throw new Exception("{$paramName} cannot be empty");
+        }
+    }
+    
+    /**
+     * Validate WooCommerce order object
+     * 
+     * @param WC_Order $order Order to validate
+     * @throws Exception When order is invalid
+     */
+    private function validateOrder(WC_Order $order): void {
+        if (!$order || !$order->get_id()) {
+            throw new Exception('Invalid order provided');
+        }
+    }
+    
     // ===== CORE METHODS =====
     
     /**
      * Find order by external reference
+     * 
+     * @param string $externalReference WMS external reference to search for
+     * @return WC_Order|null Found order or null if not found
+     * @throws Exception When external reference is invalid
      */
     public function findOrderByExternalReference(string $externalReference): ?WC_Order {
-        if (empty($externalReference)) {
-            return null;
-        }
+        $this->validateRequiredString($externalReference, 'External reference');
         
         $this->client->logger()->debug('Finding order by external reference', [
             'external_reference' => $externalReference
         ]);
         
-        // Only search by WMS external reference meta - this is the correct method
-        $orders = wc_get_orders([
-            'limit' => 1,
-            'meta_key' => '_wms_external_reference',
-            'meta_value' => $externalReference,
-        ]);
-        
-        if (!empty($orders)) {
-            $this->client->logger()->debug('Found order by WMS external reference meta', [
-                'external_reference' => $externalReference,
-                'order_id' => $orders[0]->get_id(),
-                'order_number' => $orders[0]->get_order_number()
+        try {
+            // Only search by WMS external reference meta - this is the correct method
+            $orders = wc_get_orders([
+                'limit' => 1,
+                'meta_key' => '_wms_external_reference',
+                'meta_value' => $externalReference,
             ]);
-            return $orders[0];
+            
+            if (!empty($orders)) {
+                $order = $orders[0];
+                $this->client->logger()->info('Found order by WMS external reference', [
+                    'external_reference' => $externalReference,
+                    'order_id' => $order->get_id(),
+                    'order_number' => $order->get_order_number()
+                ]);
+                return $order;
+            }
+            
+            $this->client->logger()->debug('No order found by external reference', [
+                'external_reference' => $externalReference
+            ]);
+            
+            return null;
+            
+        } catch (Exception $e) {
+            $this->client->logger()->error('Error finding order by external reference', [
+                'external_reference' => $externalReference,
+                'error' => $e->getMessage()
+            ]);
+            throw $e;
         }
         
         // No order found with this external reference
@@ -115,9 +173,24 @@ class WC_WMS_Order_Sync_Manager {
     }
     
     /**
-     * Update order from WMS data - SINGLE IMPLEMENTATION
+     * Update WooCommerce order from WMS data
+     * 
+     * Synchronizes order information from WMS to WooCommerce including:
+     * - Order status mapping and updates
+     * - Order line processing and product management
+     * - WMS metadata synchronization
+     * - Order state tracking and history
+     * 
+     * @param WC_Order $order WooCommerce order to update
+     * @param array $wmsData WMS order data containing update information
+     * @return array Update result with success status and details
+     * @throws Exception When order or WMS data is invalid
+     * 
+     * @since 1.0.0
      */
     public function updateOrderFromWMS(WC_Order $order, array $wmsData): array {
+        $this->validateOrder($order);
+        $this->validateRequiredArray($wmsData, 'WMS data');
         $orderId = $order->get_id();
         $wmsOrderId = $wmsData['id'] ?? 'unknown';
         

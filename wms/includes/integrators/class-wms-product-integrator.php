@@ -944,7 +944,7 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
         $existingProduct = $this->client->productSyncManager()->findProductBySku($wmsArticle['id']);
         
         if (!$existingProduct) {
-            $existingProduct = $this->client->products()->findWooCommerceProductByName($wmsArticle['name']);
+            $existingProduct = $this->client->products()->findProductByName($wmsArticle['name']);
         }
         
         if ($existingProduct) {
