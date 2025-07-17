@@ -50,7 +50,7 @@ interface WC_WMS_Order_Service_Interface extends WC_WMS_Service_Interface {
  */
 interface WC_WMS_Product_Service_Interface extends WC_WMS_Service_Interface {
     
-    public function getArticles(array $params = []): mixed;
+    public function getArticlesWithVariants(array $params = []): mixed;
     public function getArticle(string $articleId): mixed;
     public function createArticle(array $articleData): mixed;
     public function updateArticle(string $articleId, array $articleData): mixed;

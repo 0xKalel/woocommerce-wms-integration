@@ -54,47 +54,6 @@ class WC_WMS_Product_Service implements WC_WMS_Product_Service_Interface {
     }
     
     /**
-     * Get articles from WMS
-     */
-    public function getArticles(array $params = []): array {
-        $allowedParams = [
-            'article_code' => 'string',
-            'ean' => 'string',
-            'sku' => 'string',
-            'limit' => 'integer',
-            'page' => 'integer',
-            'from' => 'date',
-            'to' => 'date',
-            'direction' => 'string',
-            'sort' => 'string'
-        ];
-        
-        $filteredParams = [];
-        foreach ($params as $key => $value) {
-            if (isset($allowedParams[$key]) && !empty($value)) {
-                $filteredParams[$key] = $value;
-            }
-        }
-        
-        $endpoint = '/wms/articles/';
-        if (!empty($filteredParams)) {
-            $endpoint .= '?' . http_build_query($filteredParams);
-        }
-        
-        $response = $this->client->makeAuthenticatedRequest('GET', $endpoint);
-        
-        // Handle different response types
-        $articlesData = [];
-        if (isset($response['data']) && is_array($response['data'])) {
-            $articlesData = $response['data'];
-        } elseif (is_array($response) && !isset($response['success']) && !isset($response['message'])) {
-            $articlesData = $response;
-        }
-        
-        return $articlesData;
-    }
-    
-    /**
      * Get single article from WMS
      */
     public function getArticle(string $articleId, bool $includeVariants = true): array {
@@ -160,7 +119,7 @@ class WC_WMS_Product_Service implements WC_WMS_Product_Service_Interface {
             'criteria' => $criteria
         ]);
         
-        return $this->getArticles($criteria);
+        return $this->getArticlesWithVariants($criteria);
     }
     
     /**
@@ -304,7 +263,7 @@ class WC_WMS_Product_Service implements WC_WMS_Product_Service_Interface {
         $fromDate = date('Y-m-d', strtotime("-{$days} days"));
         $toDate = date('Y-m-d');
         
-        return $this->getArticles([
+        return $this->getArticlesWithVariants([
             'from' => $fromDate,
             'to' => $toDate,
             'limit' => $limit,

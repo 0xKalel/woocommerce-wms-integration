@@ -36,12 +36,12 @@ class WC_WMS_Product_Sync {
      */
     private function init_hooks() {
         // Sync products when they are created/updated
-        add_action('woocommerce_new_product', [$this, 'queue_product_sync'], 10, 1);
-        add_action('woocommerce_update_product', [$this, 'queue_product_sync'], 10, 1);
+        add_action('woocommerce_new_product', [$this, 'queueProductSync'], 10, 1);
+        add_action('woocommerce_update_product', [$this, 'queueProductSync'], 10, 1);
         
         // Sync variations when they are created/updated
-        add_action('woocommerce_new_product_variation', [$this, 'queue_product_sync'], 10, 1);
-        add_action('woocommerce_update_product_variation', [$this, 'queue_product_sync'], 10, 1);
+        add_action('woocommerce_new_product_variation', [$this, 'queueProductSync'], 10, 1);
+        add_action('woocommerce_update_product_variation', [$this, 'queueProductSync'], 10, 1);
         
         // Process sync queue via cron
         add_action('wc_wms_sync_products', [$this, 'process_sync_queue']);
@@ -78,12 +78,12 @@ class WC_WMS_Product_Sync {
         
         // Get parent product ID for variations
         $parent_id = $product->get_parent_id();
-        $sync_product_id = $parent_id ? $parent_id : $product_id;
+        $sync_product_id = $parent_id ? $parent_id : $product->get_id();
         
         // Check if product should be synced
         if (!$this->should_sync_product($product)) {
             $this->wmsClient->logger()->info('Product skipped for sync', [
-                'product_id' => $product_id,
+                'product_id' => $sync_product_id,
                 'reason' => 'Does not meet sync criteria'
             ]);
             return;

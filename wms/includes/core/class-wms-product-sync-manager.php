@@ -23,6 +23,11 @@ class WC_WMS_Product_Sync_Manager {
     private $client;
     
     /**
+     * Product finder instance for efficient lookups
+     */
+    private $productFinder;
+    
+    /**
      * Constructor
      */
     public function __construct(WC_WMS_Client $client) {
@@ -170,177 +175,24 @@ class WC_WMS_Product_Sync_Manager {
      * 
      * @since 1.0.0
      */
+    /**
+     * Find product by SKU using efficient lookup strategies
+     * 
+     * @param string $sku Product SKU to search for
+     * @return WC_Product|null Found product or null if not found
+     * @throws Exception When SKU is invalid
+     * 
+     * @since 1.0.0
+     */
     public function findProductBySku(string $sku): ?WC_Product {
         $this->validateRequiredString($sku, 'SKU');
         
-        $this->client->logger()->debug('Starting enhanced product lookup', [
-            'target_sku' => $sku,
-            'sku_length' => strlen($sku),
-            'sku_pattern' => preg_replace('/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/', 'UUID', $sku)
-        ]);
-        
-        // Method 1: Direct SKU lookup
-        $this->client->logger()->debug('Method 1: Direct SKU lookup', ['sku' => $sku]);
-        $productId = wc_get_product_id_by_sku($sku);
-        if ($productId) {
-            $product = wc_get_product($productId);
-            $this->client->logger()->info('Product found by direct SKU lookup', [
-                'method' => 'direct_sku',
-                'product_id' => $productId, 
-                'product_name' => $product->get_name(),
-                'product_sku' => $product->get_sku(),
-                'target_sku' => $sku
-            ]);
-            return $product;
-        }
-        $this->client->logger()->debug('❌ Method 1 failed: No direct SKU match');
-        
-        // Method 2: Try to find by WMS article code metadata
-        $this->client->logger()->debug('Method 2: WMS article code metadata lookup', ['sku' => $sku]);
-        $products = wc_get_products([
-            'meta_key' => '_wms_article_code',
-            'meta_value' => $sku,
-            'limit' => 1,
-            'status' => 'publish'
-        ]);
-        
-        if (!empty($products)) {
-            $product = $products[0];
-            $this->client->logger()->info('✅ SUCCESS: Product found by WMS article code metadata', [
-                'method' => 'wms_article_code',
-                'product_id' => $product->get_id(),
-                'product_name' => $product->get_name(),
-                'product_sku' => $product->get_sku(),
-                'target_sku' => $sku
-            ]);
-            return $product;
-        }
-        $this->client->logger()->debug('❌ Method 2 failed: No WMS article code match');
-        
-        // Method 3: Get some example WooCommerce SKUs for comparison
-        global $wpdb;
-        $example_skus = $wpdb->get_results(
-            "SELECT pm.meta_value as sku, p.ID, p.post_title 
-             FROM {$wpdb->postmeta} pm 
-             JOIN {$wpdb->posts} p ON pm.post_id = p.ID 
-             WHERE pm.meta_key = '_sku' 
-             AND pm.meta_value != '' 
-             AND p.post_type = 'product' 
-             AND p.post_status = 'publish'
-             LIMIT 5",
-            ARRAY_A
-        );
-        
-        $this->client->logger()->debug('Current WooCommerce SKU examples for comparison', [
-            'target_sku' => $sku,
-            'example_wc_skus' => array_column($example_skus, 'sku'),
-            'example_product_names' => array_column($example_skus, 'post_title')
-        ]);
-        
-        // Method 4: Try to find by various SKU patterns
-        $this->client->logger()->debug('Method 4: Pattern matching attempts');
-        $search_patterns = [
-            $sku, // Exact match (already tried but documented)
-            'WMS_' . $sku, // Add WMS_ prefix
-            str_replace('WMS-', 'WMS_', $sku), // Replace dash with underscore
-            str_replace('-', '_', $sku), // Replace all dashes with underscores
-            str_replace('_', '-', $sku), // Replace all underscores with dashes
-        ];
-        
-        $this->client->logger()->debug('Trying SKU patterns', [
-            'original_sku' => $sku,
-            'patterns_to_try' => $search_patterns
-        ]);
-        
-        foreach ($search_patterns as $index => $pattern) {
-            $this->client->logger()->debug("Pattern {$index}: {$pattern}");
-            $productId = wc_get_product_id_by_sku($pattern);
-            if ($productId) {
-                $product = wc_get_product($productId);
-                $this->client->logger()->info('✅ SUCCESS: Product found by pattern matching', [
-                    'method' => 'pattern_matching',
-                    'product_id' => $productId,
-                    'product_name' => $product->get_name(),
-                    'product_sku' => $product->get_sku(),
-                    'original_sku' => $sku,
-                    'matched_pattern' => $pattern,
-                    'pattern_index' => $index
-                ]);
-                return $product;
-            }
-        }
-        $this->client->logger()->debug('❌ Method 4 failed: No pattern matches');
-        
-        // Method 5: Try to find products by searching in SKU field with LIKE
-        $this->client->logger()->debug('Method 5: Partial/LIKE SKU matching');
-        $like_sku = '%' . $wpdb->esc_like($sku) . '%';
-        $sql = $wpdb->prepare(
-            "SELECT post_id, meta_value as found_sku FROM {$wpdb->postmeta} pm 
-             JOIN {$wpdb->posts} p ON pm.post_id = p.ID 
-             WHERE pm.meta_key = '_sku' 
-             AND pm.meta_value LIKE %s 
-             AND p.post_type = 'product' 
-             AND p.post_status = 'publish'
-             LIMIT 3",
-            $like_sku
-        );
-        
-        $partial_matches = $wpdb->get_results($sql, ARRAY_A);
-        $this->client->logger()->debug('Partial SKU matches found', [
-            'target_sku' => $sku,
-            'like_pattern' => $like_sku,
-            'matches' => $partial_matches
-        ]);
-        
-        if (!empty($partial_matches)) {
-            $productId = $partial_matches[0]['post_id'];
-            $product = wc_get_product($productId);
-            $this->client->logger()->info('✅ SUCCESS: Product found by partial SKU match', [
-                'method' => 'partial_match',
-                'product_id' => $productId,
-                'product_name' => $product->get_name(),
-                'product_sku' => $product->get_sku(),
-                'target_sku' => $sku,
-                'found_sku' => $partial_matches[0]['found_sku']
-            ]);
-            return $product;
-        }
-        $this->client->logger()->debug('❌ Method 5 failed: No partial matches');
-        
-        // Method 6: Try to find by WMS article ID if the SKU looks like a UUID
-        if (preg_match('/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i', $sku)) {
-            $this->client->logger()->debug('Method 6: Trying UUID-based article ID lookup', ['sku' => $sku]);
-            
-            // Try to find product with this WMS article ID
-            $products = wc_get_products([
-                'meta_key' => '_wms_article_id',
-                'meta_value' => $sku,
-                'limit' => 1,
-                'status' => 'publish'
-            ]);
-            
-            if (!empty($products)) {
-                $product = $products[0];
-                $this->client->logger()->info('✅ SUCCESS: Product found by WMS article ID', [
-                    'method' => 'wms_article_id',
-                    'product_id' => $product->get_id(),
-                    'product_name' => $product->get_name(),
-                    'product_sku' => $product->get_sku(),
-                    'target_sku' => $sku,
-                    'wms_article_id' => $product->get_meta('_wms_article_id')
-                ]);
-                return $product;
-            }
-            $this->client->logger()->debug('❌ Method 6 failed: No WMS article ID match');
+        // Use the dedicated Product Finder class for clean, efficient lookups
+        if (!isset($this->productFinder)) {
+            $this->productFinder = new WC_WMS_Product_Finder($this->client);
         }
         
-        $this->client->logger()->warning('❌ FAILED: Product not found by any method', [
-            'target_sku' => $sku,
-            'methods_tried' => ['direct_sku', 'wms_article_code', 'pattern_matching', 'partial_match', 'wms_article_id'],
-            'suggestion' => 'Check if this SKU exists in a different format or if it needs to be imported'
-        ]);
-        
-        return null;
+        return $this->productFinder->findProductBySku($sku);
     }
     
     /**
@@ -795,7 +647,7 @@ class WC_WMS_Product_Sync_Manager {
      * Get articles with variants from WMS
      */
     private function getArticlesWithVariants(array $params = []): mixed {
-        return $this->client->products()->getArticles($params);
+        return $this->client->products()->getArticlesWithVariants($params);
     }
     
     /**

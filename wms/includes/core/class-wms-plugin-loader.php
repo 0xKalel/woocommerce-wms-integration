@@ -68,6 +68,7 @@ class WC_WMS_Plugin_Loader {
         // Centralized sync managers - ADDED
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-order-sync-manager.php';
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-product-sync-manager.php';
+        include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-product-finder.php';
     }
     
     /**
