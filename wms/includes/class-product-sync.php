@@ -71,6 +71,15 @@ class WC_WMS_Product_Sync {
             throw new Exception('Product ID cannot be empty');
         }
         
+        // SKIP IF WMS SYNC IS IN PROGRESS (prevent circular sync)
+        if (WC_WMS_Product_Sync_Manager::isSyncInProgress()) {
+            $this->wmsClient->logger()->debug('Skipping product sync - WMS sync in progress', [
+                'product_id' => is_object($productId) ? $productId->get_id() : $productId,
+                'reason' => 'WMS sync in progress - preventing circular sync'
+            ]);
+            return;
+        }
+        
         $product = is_object($productId) ? $productId : wc_get_product($productId);
         if (!$product) {
             throw new Exception("Product not found for sync: {$productId}");

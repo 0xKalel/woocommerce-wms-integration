@@ -155,6 +155,15 @@ class WC_WMS_Order_Hooks {
             return;
         }
         
+        // SKIP IF WMS ORDER SYNC IS IN PROGRESS (prevent circular sync)
+        if (WC_WMS_Order_Sync_Manager::isSyncInProgress()) {
+            $this->logger->debug('Skipping order processing - WMS order sync in progress', [
+                'order_id' => $order_id,
+                'reason' => 'WMS order sync in progress - preventing circular sync'
+            ]);
+            return;
+        }
+        
         $this->logger->info('New order created', [
             'order_id' => $order_id,
             'order_number' => $order->get_order_number(),
@@ -208,6 +217,15 @@ class WC_WMS_Order_Hooks {
             return;
         }
         
+        // SKIP IF WMS ORDER SYNC IS IN PROGRESS (prevent circular sync)
+        if (WC_WMS_Order_Sync_Manager::isSyncInProgress()) {
+            $this->logger->debug('Skipping order update processing - WMS order sync in progress', [
+                'order_id' => $order_id,
+                'reason' => 'WMS order sync in progress - preventing circular sync'
+            ]);
+            return;
+        }
+        
         // Check if order is already in WMS
         $wmsOrderId = $order->get_meta('_wms_order_id');
         
@@ -254,6 +272,17 @@ class WC_WMS_Order_Hooks {
         
         // Use centralized skip logic
         if ($this->shouldSkipWMSProcessing($order, 'status_change')) {
+            return;
+        }
+        
+        // SKIP IF WMS ORDER SYNC IS IN PROGRESS (prevent circular sync)
+        if (WC_WMS_Order_Sync_Manager::isSyncInProgress()) {
+            $this->logger->debug('Skipping order status change processing - WMS order sync in progress', [
+                'order_id' => $order_id,
+                'old_status' => $old_status,
+                'new_status' => $new_status,
+                'reason' => 'WMS order sync in progress - preventing circular sync'
+            ]);
             return;
         }
         

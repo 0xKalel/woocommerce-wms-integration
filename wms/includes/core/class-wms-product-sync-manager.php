@@ -28,10 +28,36 @@ class WC_WMS_Product_Sync_Manager {
     private $productFinder;
     
     /**
+     * Static flag to track if WMS sync is in progress
+     */
+    private static $syncInProgress = false;
+    
+    /**
      * Constructor
      */
     public function __construct(WC_WMS_Client $client) {
         $this->client = $client;
+    }
+    
+    /**
+     * Check if WMS sync is currently in progress
+     */
+    public static function isSyncInProgress(): bool {
+        return self::$syncInProgress;
+    }
+    
+    /**
+     * Mark WMS sync as in progress
+     */
+    private function markSyncInProgress(): void {
+        self::$syncInProgress = true;
+    }
+    
+    /**
+     * Mark WMS sync as completed
+     */
+    private function markSyncCompleted(): void {
+        self::$syncInProgress = false;
     }
     
     // ===== VALIDATION HELPERS =====
@@ -514,43 +540,51 @@ class WC_WMS_Product_Sync_Manager {
                 'total_articles' => count($articlesData)
             ]);
             
+            // PREVENT CIRCULAR SYNC WITH SIMPLE FLAG
+            $this->markSyncInProgress();
+            
             $imported = 0;
             $updated = 0;
             $skipped = 0;
             $errors = 0;
             $error_details = [];
             
-            foreach ($articlesData as $article) {
-                try {
-                    $result = $this->importSingleArticle($article);
-                    
-                    if ($result['action'] === 'created') {
-                        $imported++;
-                    } elseif ($result['action'] === 'updated') {
-                        $updated++;
-                    } elseif ($result['action'] === 'skipped') {
-                        $skipped++;
+            try {
+                foreach ($articlesData as $article) {
+                    try {
+                        $result = $this->importSingleArticle($article);
+                        
+                        if ($result['action'] === 'created') {
+                            $imported++;
+                        } elseif ($result['action'] === 'updated') {
+                            $updated++;
+                        } elseif ($result['action'] === 'skipped') {
+                            $skipped++;
+                        }
+                        
+                        $this->client->logger()->debug('Article processed successfully', [
+                            'article_name' => $article['name'] ?? 'unknown',
+                            'action' => $result['action'],
+                            'product_id' => $result['product_id']
+                        ]);
+                        
+                    } catch (Exception $e) {
+                        $errors++;
+                        $error_msg = $e->getMessage();
+                        $error_details[] = sprintf('Article "%s": %s', 
+                            $article['name'] ?? 'unknown', 
+                            $error_msg
+                        );
+                        
+                        $this->client->logger()->error('Failed to import article', [
+                            'article_name' => $article['name'] ?? 'unknown',
+                            'error' => $error_msg
+                        ]);
                     }
-                    
-                    $this->client->logger()->debug('Article processed successfully', [
-                        'article_name' => $article['name'] ?? 'unknown',
-                        'action' => $result['action'],
-                        'product_id' => $result['product_id']
-                    ]);
-                    
-                } catch (Exception $e) {
-                    $errors++;
-                    $error_msg = $e->getMessage();
-                    $error_details[] = sprintf('Article "%s": %s', 
-                        $article['name'] ?? 'unknown', 
-                        $error_msg
-                    );
-                    
-                    $this->client->logger()->error('Failed to import article', [
-                        'article_name' => $article['name'] ?? 'unknown',
-                        'error' => $error_msg
-                    ]);
                 }
+            } finally {
+                // ALWAYS CLEAR FLAG EVEN IF ERRORS OCCUR
+                $this->markSyncCompleted();
             }
             
             $this->client->logger()->info('Article import completed', [

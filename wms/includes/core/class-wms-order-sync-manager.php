@@ -33,6 +33,11 @@ class WC_WMS_Order_Sync_Manager {
     private $productSyncManager;
     
     /**
+     * Static flag to track if WMS order sync is in progress
+     */
+    private static $syncInProgress = false;
+    
+    /**
      * WMS Order Status to WooCommerce Status Mapping - SINGLE SOURCE OF TRUTH
      */
     const STATUS_MAPPING = [
@@ -67,6 +72,29 @@ class WC_WMS_Order_Sync_Manager {
         $this->client = $client;
         $this->orderStateManager = $client->orderStateManager();
         $this->productSyncManager = new WC_WMS_Product_Sync_Manager($client);
+    }
+    
+    /**
+     * Check if WMS order sync is currently in progress
+     */
+    public static function isSyncInProgress(): bool {
+        return self::$syncInProgress;
+    }
+    
+    /**
+     * Mark WMS order sync as in progress
+     */
+    private function markSyncInProgress(): void {
+        self::$syncInProgress = true;
+        $this->client->logger()->debug('WMS order sync marked as in progress');
+    }
+    
+    /**
+     * Mark WMS order sync as completed
+     */
+    private function markSyncCompleted(): void {
+        self::$syncInProgress = false;
+        $this->client->logger()->debug('WMS order sync marked as completed');
     }
     
     // ===== VALIDATION HELPERS =====
@@ -202,7 +230,10 @@ class WC_WMS_Order_Sync_Manager {
         ]);
         
         try {
-            // Suspend hooks to prevent circular sync
+            // PREVENT CIRCULAR SYNC WITH SIMPLE FLAG
+            $this->markSyncInProgress();
+            
+            // Suspend hooks to prevent circular sync (existing protection)
             $this->orderStateManager->suspendOrderHooks($order);
             
             $result = [
@@ -262,8 +293,9 @@ class WC_WMS_Order_Sync_Manager {
             ];
             
         } finally {
-            // Always restore hooks
+            // Always restore hooks and clear sync flag
             $this->orderStateManager->restoreOrderHooks($order);
+            $this->markSyncCompleted();
         }
     }
     
