@@ -185,106 +185,6 @@ class WC_WMS_Product_Service implements WC_WMS_Product_Service_Interface {
     }
     
     /**
-     * Transform WooCommerce product to WMS article format
-     */
-    public function transformWooCommerceProduct(WC_Product $product): array {
-        $this->client->logger()->debug('Transforming WooCommerce product to WMS format', [
-            'product_id' => $product->get_id(),
-            'product_type' => $product->get_type()
-        ]);
-        
-        $articleData = [
-            'name' => $product->get_name(),
-            'variants' => []
-        ];
-        
-        if ($product->is_type('simple')) {
-            $articleData['variants'][] = $this->transformSimpleProduct($product);
-        } elseif ($product->is_type('variable')) {
-            $variation_ids = $product->get_children();
-            foreach ($variation_ids as $variation_id) {
-                $variationProduct = wc_get_product($variation_id);
-                if ($variationProduct) {
-                    $articleData['variants'][] = $this->transformVariationProduct($variationProduct);
-                }
-            }
-        }
-        
-        $this->client->logger()->debug('WooCommerce product transformed to WMS format', [
-            'product_id' => $product->get_id(),
-            'variant_count' => count($articleData['variants'])
-        ]);
-        
-        return $articleData;
-    }
-    
-    /**
-     * Transform simple product to variant data
-     */
-    private function transformSimpleProduct(WC_Product $product): array {
-        $sku = $product->get_sku();
-        if (empty($sku)) {
-            $sku = 'WC_' . $product->get_id();
-            $product->set_sku($sku);
-            $product->save();
-        }
-        
-        $variantData = [
-            'name' => $product->get_name(),
-            'article_code' => $sku,
-            'description' => $product->get_description(),
-            'ean' => $product->get_meta('_ean') ?: null,
-            'sku' => $sku,
-            'hs_tariff_code' => $product->get_meta('_hs_tariff_code') ?: null,
-            'height' => $product->get_height() ? floatval($product->get_height()) : null,
-            'depth' => $product->get_length() ? floatval($product->get_length()) : null,
-            'width' => $product->get_width() ? floatval($product->get_width()) : null,
-            'weight' => $product->get_weight() ? floatval($product->get_weight()) : null,
-            'expirable' => $product->get_meta('_expirable') === 'yes',
-            'country_of_origin' => $product->get_meta('_country_of_origin') ?: null,
-            'using_serial_numbers' => $product->get_meta('_using_serial_numbers') === 'yes',
-            'value' => floatval($product->get_price())
-        ];
-        
-        return array_filter($variantData, function($value) {
-            return $value !== null;
-        });
-    }
-    
-    /**
-     * Transform variation product to variant data
-     */
-    private function transformVariationProduct(WC_Product_Variation $variation): array {
-        $sku = $variation->get_sku();
-        if (empty($sku)) {
-            $sku = 'WC_' . $variation->get_id();
-            $variation->set_sku($sku);
-            $variation->save();
-        }
-        
-        $variantData = [
-            'name' => $variation->get_name(),
-            'article_code' => $sku,
-            'description' => $variation->get_description(),
-            'ean' => $variation->get_meta('_ean') ?: null,
-            'sku' => $sku,
-            'hs_tariff_code' => $variation->get_meta('_hs_tariff_code') ?: null,
-            'height' => $variation->get_height() ? floatval($variation->get_height()) : null,
-            'depth' => $variation->get_length() ? floatval($variation->get_length()) : null,
-            'width' => $variation->get_width() ? floatval($variation->get_width()) : null,
-            'weight' => $variation->get_weight() ? floatval($variation->get_weight()) : null,
-            'expirable' => $variation->get_meta('_expirable') === 'yes',
-            'country_of_origin' => $variation->get_meta('_country_of_origin') ?: null,
-            'using_serial_numbers' => $variation->get_meta('_using_serial_numbers') === 'yes',
-            'value' => floatval($variation->get_price())
-        ];
-        
-        return array_filter($variantData, function($value) {
-            return $value !== null;
-        });
-    }
-    
-    /**
      * Get article variants from WMS
      */
     public function getArticleVariants(string $articleId): array {
@@ -508,9 +408,9 @@ class WC_WMS_Product_Service implements WC_WMS_Product_Service_Interface {
     }
     
     /**
-     * Import articles from WMS and create/update WooCommerce products
+     * Import a single article from WMS
      */
-    public function importArticlesFromWms(array $params = []): mixed {
+    private function importSingleArticle(array $article): array {
         try {
             // Set default params
             $defaultParams = [
@@ -756,7 +656,7 @@ class WC_WMS_Product_Service implements WC_WMS_Product_Service_Interface {
             ]);
             
             // Transform WooCommerce product to WMS format
-            $articleData = $this->transformWooCommerceProduct($product);
+            $articleData = $this->client->productSyncManager()->transformWooCommerceProduct($product);
             
             // Check if product already exists in WMS
             $wmsArticleId = $product->get_meta('_wms_article_id');

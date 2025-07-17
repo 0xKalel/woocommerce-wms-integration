@@ -284,11 +284,4 @@ class WC_WMS_Admin_Page_Data {
         
         return $logs;
     }
-    
-    /**
-     * Clear stored data when needed
-     */
-    public static function clear_stored_data() {
-        // Data is retrieved fresh from WordPress options
-    }
 }

@@ -426,4 +426,282 @@ class WC_WMS_Product_Sync_Manager {
             return null;
         }
     }
+    
+    /**
+     * Transform WooCommerce product to WMS article format
+     */
+    public function transformWooCommerceProduct(WC_Product $product): array {
+        $this->client->logger()->debug('Transforming WooCommerce product to WMS format', [
+            'product_id' => $product->get_id(),
+            'product_type' => $product->get_type()
+        ]);
+        
+        $articleData = [
+            'name' => $product->get_name(),
+            'variants' => []
+        ];
+        
+        if ($product->is_type('simple')) {
+            $articleData['variants'][] = $this->transformSimpleProduct($product);
+        } elseif ($product->is_type('variable')) {
+            $variation_ids = $product->get_children();
+            foreach ($variation_ids as $variation_id) {
+                $variationProduct = wc_get_product($variation_id);
+                if ($variationProduct) {
+                    $articleData['variants'][] = $this->transformVariationProduct($variationProduct);
+                }
+            }
+        }
+        
+        $this->client->logger()->debug('WooCommerce product transformed to WMS format', [
+            'product_id' => $product->get_id(),
+            'variant_count' => count($articleData['variants'])
+        ]);
+        
+        return $articleData;
+    }
+    
+    /**
+     * Transform simple product to variant data
+     */
+    private function transformSimpleProduct(WC_Product $product): array {
+        $sku = $product->get_sku();
+        if (empty($sku)) {
+            $sku = 'WC_' . $product->get_id();
+            $product->set_sku($sku);
+            $product->save();
+        }
+        
+        $variantData = [
+            'name' => $product->get_name(),
+            'article_code' => $sku,
+            'description' => $product->get_description(),
+            'ean' => $product->get_meta('_ean') ?: null,
+            'sku' => $sku,
+            'hs_tariff_code' => $product->get_meta('_hs_tariff_code') ?: null,
+            'height' => $product->get_height() ? floatval($product->get_height()) : null,
+            'depth' => $product->get_length() ? floatval($product->get_length()) : null,
+            'width' => $product->get_width() ? floatval($product->get_width()) : null,
+            'weight' => $product->get_weight() ? floatval($product->get_weight()) : null,
+            'expirable' => $product->get_meta('_expirable') === 'yes',
+            'country_of_origin' => $product->get_meta('_country_of_origin') ?: null,
+            'using_serial_numbers' => $product->get_meta('_using_serial_numbers') === 'yes',
+            'value' => floatval($product->get_price())
+        ];
+        
+        return array_filter($variantData, function($value) {
+            return $value !== null;
+        });
+    }
+    
+    /**
+     * Transform variation product to variant data
+     */
+    private function transformVariationProduct(WC_Product_Variation $variation): array {
+        $sku = $variation->get_sku();
+        if (empty($sku)) {
+            $sku = 'WC_' . $variation->get_id();
+            $variation->set_sku($sku);
+            $variation->save();
+        }
+        
+        $variantData = [
+            'name' => $variation->get_name(),
+            'article_code' => $sku,
+            'description' => $variation->get_description(),
+            'ean' => $variation->get_meta('_ean') ?: null,
+            'sku' => $sku,
+            'hs_tariff_code' => $variation->get_meta('_hs_tariff_code') ?: null,
+            'height' => $variation->get_height() ? floatval($variation->get_height()) : null,
+            'depth' => $variation->get_length() ? floatval($variation->get_length()) : null,
+            'width' => $variation->get_width() ? floatval($variation->get_width()) : null,
+            'weight' => $variation->get_weight() ? floatval($variation->get_weight()) : null,
+            'expirable' => $variation->get_meta('_expirable') === 'yes',
+            'country_of_origin' => $variation->get_meta('_country_of_origin') ?: null,
+            'using_serial_numbers' => $variation->get_meta('_using_serial_numbers') === 'yes',
+            'value' => floatval($variation->get_price())
+        ];
+        
+        return array_filter($variantData, function($value) {
+            return $value !== null;
+        });
+    }
+    
+    /**
+     * Import articles from WMS and create/update WooCommerce products
+     */
+    public function importArticlesFromWms(array $params = []): mixed {
+        try {
+            // Set default params
+            $defaultParams = [
+                'limit' => 500,
+                'page' => 1
+            ];
+            $params = array_merge($defaultParams, $params);
+            
+            $this->client->logger()->info('Starting article import from WMS', [
+                'params' => $params
+            ]);
+            
+            // Get articles from WMS with expanded variants
+            $articles = $this->getArticlesWithVariants($params);
+            
+            if (is_wp_error($articles)) {
+                $this->client->logger()->error('Failed to retrieve articles from WMS', [
+                    'error_message' => $articles->get_error_message(),
+                    'error_code' => $articles->get_error_code(),
+                    'params' => $params
+                ]);
+                return $articles;
+            }
+            
+            // Handle different response structures
+            $articlesData = [];
+            if (isset($articles['results']) && is_array($articles['results'])) {
+                $articlesData = $articles['results'];
+            } elseif (isset($articles['data']) && is_array($articles['data'])) {
+                $articlesData = $articles['data'];
+            } elseif (is_array($articles)) {
+                $articlesData = $articles;
+            }
+            
+            $this->client->logger()->info('Retrieved articles from WMS', [
+                'total_articles' => count($articlesData)
+            ]);
+            
+            $imported = 0;
+            $updated = 0;
+            $skipped = 0;
+            $errors = 0;
+            $error_details = [];
+            
+            foreach ($articlesData as $article) {
+                try {
+                    $result = $this->importSingleArticle($article);
+                    
+                    if ($result['action'] === 'created') {
+                        $imported++;
+                    } elseif ($result['action'] === 'updated') {
+                        $updated++;
+                    } elseif ($result['action'] === 'skipped') {
+                        $skipped++;
+                    }
+                    
+                    $this->client->logger()->debug('Article processed successfully', [
+                        'article_name' => $article['name'] ?? 'unknown',
+                        'action' => $result['action'],
+                        'product_id' => $result['product_id']
+                    ]);
+                    
+                } catch (Exception $e) {
+                    $errors++;
+                    $error_msg = $e->getMessage();
+                    $error_details[] = sprintf('Article "%s": %s', 
+                        $article['name'] ?? 'unknown', 
+                        $error_msg
+                    );
+                    
+                    $this->client->logger()->error('Failed to import article', [
+                        'article_name' => $article['name'] ?? 'unknown',
+                        'error' => $error_msg
+                    ]);
+                }
+            }
+            
+            $this->client->logger()->info('Article import completed', [
+                'imported' => $imported,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'errors' => $errors,
+                'total_processed' => count($articlesData)
+            ]);
+            
+            return [
+                'imported' => $imported,
+                'updated' => $updated,
+                'skipped' => $skipped,
+                'errors' => $errors,
+                'error_details' => $error_details,
+                'total_articles' => count($articlesData)
+            ];
+            
+        } catch (Exception $e) {
+            $this->client->logger()->error('Article import failed with exception', [
+                'error' => $e->getMessage()
+            ]);
+            
+            return new WP_Error('import_failed', 'Import failed: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Import a single article from WMS
+     */
+    private function importSingleArticle(array $article): array {
+        // Extract article data
+        $articleName = $article['name'] ?? 'Unnamed Article';
+        $articleId = $article['id'] ?? null;
+        $variants = $article['variants'] ?? [];
+        
+        if (empty($variants)) {
+            throw new Exception('No variants found for article');
+        }
+        
+        $this->client->logger()->debug('Processing article', [
+            'article_id' => $articleId,
+            'article_name' => $articleName,
+            'variants_count' => count($variants)
+        ]);
+        
+        // Create simple products for each variant
+        // Variable product support can be added in future versions
+        $primaryVariant = reset($variants);
+        
+        $sku = $primaryVariant['article_code'] ?? $primaryVariant['sku'] ?? null;
+        if (empty($sku)) {
+            throw new Exception('SKU not found in variant data');
+        }
+        
+        // Check if product already exists
+        $existingProduct = $this->findProductBySku($sku);
+        
+        if ($existingProduct) {
+            // Check if product actually needs updating
+            if ($this->client->products()->productNeedsUpdate($existingProduct, $article, $primaryVariant)) {
+                $this->client->products()->updateWooCommerceProduct($existingProduct, $article, $primaryVariant);
+                return [
+                    'action' => 'updated',
+                    'product_id' => $existingProduct->get_id(),
+                    'sku' => $sku
+                ];
+            } else {
+                // Product is already up-to-date
+                return [
+                    'action' => 'skipped',
+                    'product_id' => $existingProduct->get_id(),
+                    'sku' => $sku
+                ];
+            }
+        } else {
+            // Create new product
+            $product = $this->createSimpleProductFromVariant($primaryVariant, $sku);
+            
+            if ($product) {
+                return [
+                    'action' => 'created',
+                    'product_id' => $product->get_id(),
+                    'sku' => $sku
+                ];
+            } else {
+                throw new Exception('Failed to create product from variant');
+            }
+        }
+    }
+    
+    /**
+     * Get articles with variants from WMS
+     */
+    private function getArticlesWithVariants(array $params = []): mixed {
+        return $this->client->products()->getArticles($params);
+    }
 }

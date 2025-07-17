@@ -1244,4 +1244,238 @@ class WC_WMS_Order_Sync_Manager {
             ));
         }
     }
+    
+    /**
+     * Transform WooCommerce order to WMS format
+     */
+    public function transformWooCommerceOrder(WC_Order $order): array {
+        $this->client->logger()->debug('Transforming WooCommerce order to WMS format', [
+            'order_id' => $order->get_id(),
+            'order_number' => $order->get_order_number()
+        ]);
+        
+        // Get WMS customer UUID (must be created first)
+        $customerId = $this->getWMSCustomerId($order);
+        
+        // Get shipping address in correct format
+        $shippingAddress = $this->getWMSShippingAddress($order);
+        
+        // Get order lines in correct format
+        $orderLines = $this->getWMSOrderLines($order);
+        
+        // Get shipping method UUID
+        $shippingMethodId = $this->getWMSShippingMethodId($order);
+        
+        // Build order data according to API spec - MINIMAL PAYLOAD to avoid "extra fields" error
+        $orderData = [
+            // Required fields
+            'customer' => $customerId,
+            'order_lines' => $orderLines,
+            'requested_delivery_date' => $this->getRequestedDeliveryDate($order),
+            'external_reference' => (string) $order->get_order_number(),
+            'shipping_method' => $shippingMethodId,
+            'shipping_address' => $shippingAddress,
+            
+            // Minimal optional fields (only include what's shown in API examples)
+            'note' => $order->get_customer_note() ?: null,
+        ];
+        
+        // Remove null values
+        $orderData = array_filter($orderData, function($value) {
+            return $value !== null;
+        });
+        
+        $this->client->logger()->debug('WooCommerce order transformed to WMS format', [
+            'order_id' => $order->get_id(),
+            'external_reference' => $orderData['external_reference'],
+            'line_count' => count($orderData['order_lines'])
+        ]);
+        
+        return $orderData;
+    }
+    
+    /**
+     * Get WMS customer UUID from configuration
+     */
+    private function getWMSCustomerId(WC_Order $order): string {
+        // Get the configured WMS customer ID (your business partner account)
+        $wmsCustomerId = get_option('wc_wms_integration_customer_id');
+        
+        if (empty($wmsCustomerId)) {
+            throw new Exception('WMS customer ID not configured. Please configure your WMS customer ID in the settings.');
+        }
+        
+        // Validate UUID format
+        if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $wmsCustomerId)) {
+            throw new Exception('Invalid WMS customer ID format. Must be a valid UUID.');
+        }
+        
+        return $wmsCustomerId;
+    }
+    
+    /**
+     * Get shipping address in WMS format
+     */
+    private function getWMSShippingAddress(WC_Order $order): array {
+        $street = $order->get_shipping_address_1();
+        $streetNumber = '';
+        $streetName = $street;
+        $streetNumberAddition = null;
+        
+        // Try to extract street number (basic implementation)
+        if (preg_match('/^(\d+)\s*([a-zA-Z]?)\s+(.+)$/', $street, $matches)) {
+            $streetNumber = $matches[1];
+            $streetNumberAddition = !empty($matches[2]) ? $matches[2] : null;
+            $streetName = $matches[3];
+        }
+        
+        // Simplified shipping address to match API documentation examples
+        return [
+            'addressed_to' => trim($order->get_shipping_first_name() . ' ' . $order->get_shipping_last_name()),
+            'street' => $streetName ?: $street,
+            'street_number' => $streetNumber,
+            'zipcode' => $order->get_shipping_postcode(),
+            'city' => $order->get_shipping_city(),
+            'country' => $order->get_shipping_country()
+        ];
+    }
+    
+    /**
+     * Get order lines in WMS format
+     */
+    private function getWMSOrderLines(WC_Order $order): array {
+        $orderLines = [];
+        
+        foreach ($order->get_items() as $item) {
+            $product = $item->get_product();
+            if (!$product) continue;
+            
+            // Get product SKU for article_code
+            $sku = $product->get_sku();
+            if (empty($sku)) {
+                $sku = 'WC_' . $product->get_id();
+            }
+            
+            $orderLines[] = [
+                'article_code' => $sku, // Use SKU as article_code
+                'quantity' => $item->get_quantity(),
+                'description' => $product->get_name()
+                // Order meta data excluded to prevent API compatibility issues
+            ];
+        }
+        
+        return $orderLines;
+    }
+    
+    /**
+     * Get shipping method ID from WooCommerce order
+     */
+    private function getWMSShippingMethodId(WC_Order $order): ?string {
+        $shippingMethods = $order->get_shipping_methods();
+        if (empty($shippingMethods)) {
+            // Use default shipping method if no shipping method on order
+            return get_option('wc_wms_default_shipping_method_uuid', null);
+        }
+        
+        $shippingMethod = reset($shippingMethods);
+        $methodKey = $shippingMethod->get_method_id() . ':' . $shippingMethod->get_instance_id();
+        
+        // Get shipping method mapping from existing admin system
+        $shippingMapping = get_option('wc_wms_shipping_method_uuid_mapping', []);
+        
+        // Return the mapped WMS UUID if exists, otherwise use default
+        return $shippingMapping[$methodKey] ?? get_option('wc_wms_default_shipping_method_uuid', null);
+    }
+    
+    /**
+     * Get requested delivery date
+     */
+    private function getRequestedDeliveryDate(WC_Order $order): string {
+        // Check if customer requested specific delivery date
+        $requestedDate = $order->get_meta('_requested_delivery_date');
+        if ($requestedDate) {
+            return date('Y-m-d', strtotime($requestedDate));
+        }
+        
+        // Check for delivery date from checkout fields
+        $deliveryDate = $order->get_meta('_delivery_date');
+        if ($deliveryDate) {
+            return date('Y-m-d', strtotime($deliveryDate));
+        }
+        
+        // Default to next business day
+        $tomorrow = strtotime('+1 day');
+        
+        // Skip weekends
+        while (date('N', $tomorrow) >= 6) {
+            $tomorrow = strtotime('+1 day', $tomorrow);
+        }
+        
+        return date('Y-m-d', $tomorrow);
+    }
+    
+    /**
+     * Get order language
+     */
+    private function getOrderLanguage(WC_Order $order): string {
+        // Check order meta for language
+        $language = $order->get_meta('_order_language');
+        if ($language) {
+            return $language;
+        }
+        
+        // Check customer language
+        $customerId = $order->get_customer_id();
+        if ($customerId) {
+            $language = get_user_meta($customerId, '_language', true);
+            if ($language) {
+                return $language;
+            }
+        }
+        
+        // Default to site language
+        return substr(get_locale(), 0, 2) ?: 'en';
+    }
+    
+    /**
+     * Get order meta data for WMS
+     */
+    private function getOrderMetaData(WC_Order $order): array {
+        $metaData = [];
+        
+        // Add order status
+        $metaData['wc_order_status'] = $order->get_status();
+        
+        // Add payment method
+        $metaData['payment_method'] = $order->get_payment_method();
+        
+        // Add order total
+        $metaData['order_total'] = $order->get_total();
+        
+        // Add customer ID
+        if ($order->get_customer_id()) {
+            $metaData['wc_customer_id'] = $order->get_customer_id();
+        }
+        
+        // Add custom meta fields
+        $customMeta = $order->get_meta('_wms_meta_data');
+        if ($customMeta && is_array($customMeta)) {
+            $metaData = array_merge($metaData, $customMeta);
+        }
+        
+        return $metaData;
+    }
+    
+    /**
+     * Get item meta data
+     */
+    private function getItemMetaData(WC_Order_Item $item): array {
+        $metaData = [];
+        
+        foreach ($item->get_meta_data() as $meta) {
+            $metaData[$meta->key] = $meta->value;
+        }
+        
+        return $metaData;
+    }
 }

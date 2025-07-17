@@ -450,17 +450,4 @@ class WC_WMS_Queue_Service {
         
         return apply_filters('wc_wms_should_sync_product', true, $product);
     }
-    
-    /**
-     * Check if order has physical products
-     */
-    private function hasPhysicalProducts(WC_Order $order): bool {
-        foreach ($order->get_items() as $item) {
-            $product = $item->get_product();
-            if ($product && !$product->is_virtual() && !$product->is_downloadable()) {
-                return true;
-            }
-        }
-        return false;
-    }
 }

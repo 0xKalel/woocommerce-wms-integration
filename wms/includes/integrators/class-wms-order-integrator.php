@@ -159,7 +159,7 @@ class WC_WMS_Order_Integrator implements WC_WMS_Order_Integrator_Interface {
      * Transform order data for WMS (Interface requirement)
      */
     public function transformOrderData(WC_Order $order): array {
-        return $this->client->orders()->transformWooCommerceOrder($order);
+        return $this->client->orderSyncManager()->transformWooCommerceOrder($order);
     }
     
     /**
@@ -188,7 +188,7 @@ class WC_WMS_Order_Integrator implements WC_WMS_Order_Integrator_Interface {
         }
         
         // Transform order to WMS format
-        $orderData = $this->client->orders()->transformWooCommerceOrder($order);
+        $orderData = $this->client->orderSyncManager()->transformWooCommerceOrder($order);
         
         // Create order in WMS
         $result = $this->createOrderInWMS($order, $orderData);

@@ -157,7 +157,7 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
      * Transform product data for WMS (Interface requirement)
      */
     public function transformProductData(WC_Product $product): array {
-        return $this->client->products()->transformWooCommerceProduct($product);
+        return $this->client->productSyncManager()->transformWooCommerceProduct($product);
     }
     
     /**
@@ -214,7 +214,7 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
         }
         
         // Transform product to WMS format
-        $articleData = $this->client->products()->transformWooCommerceProduct($product);
+        $articleData = $this->client->productSyncManager()->transformWooCommerceProduct($product);
         
         // Check if product already exists in WMS
         $wmsArticleId = $product->get_meta('_wms_article_id');
