@@ -103,12 +103,15 @@ class WC_WMS_Product_Sync {
     
     /**
      * Import articles from WMS and create/update WooCommerce products
+     * 
+     * Uses centralized Product Sync Manager for consistent import handling
      */
     public function import_articles_from_wms($params = []) {
-        $this->wmsClient->logger()->info('Starting article import from WMS', $params);
+        $this->wmsClient->logger()->info('Starting article import from WMS via centralized sync manager', $params);
         
         try {
-            return $this->wmsClient->productIntegrator()->importArticlesFromWMS($params);
+            // USE CENTRALIZED PRODUCT SYNC MANAGER
+            return $this->wmsClient->productSyncManager()->importArticlesFromWms($params);
         } catch (Exception $e) {
             $this->wmsClient->logger()->error('Failed to import articles from WMS', [
                 'error' => $e->getMessage(),
@@ -127,7 +130,8 @@ class WC_WMS_Product_Sync {
         ]);
         
         try {
-            return $this->wmsClient->stockIntegrator()->syncStockFromWMS($product_ids);
+            // Use Stock Integrator's bulk sync method for multiple products
+            return $this->wmsClient->stockIntegrator()->syncAllStock();
         } catch (Exception $e) {
             $this->wmsClient->logger()->error('Failed to sync stock from WMS', [
                 'error' => $e->getMessage(),

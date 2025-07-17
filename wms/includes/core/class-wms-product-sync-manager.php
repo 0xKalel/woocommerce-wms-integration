@@ -759,9 +759,9 @@ class WC_WMS_Product_Sync_Manager {
         $existingProduct = $this->findProductBySku($sku);
         
         if ($existingProduct) {
-            // Check if product actually needs updating
-            if ($this->client->products()->productNeedsUpdate($existingProduct, $article, $primaryVariant)) {
-                $this->client->products()->updateWooCommerceProduct($existingProduct, $article, $primaryVariant);
+            // Check if product actually needs updating using our own centralized method
+            if ($this->productNeedsUpdate($existingProduct, $article, $primaryVariant)) {
+                $this->updateWooCommerceProduct($existingProduct, $article, $primaryVariant);
                 return [
                     'action' => 'updated',
                     'product_id' => $existingProduct->get_id(),
@@ -796,5 +796,277 @@ class WC_WMS_Product_Sync_Manager {
      */
     private function getArticlesWithVariants(array $params = []): mixed {
         return $this->client->products()->getArticles($params);
+    }
+    
+    /**
+     * Check if product needs updating from WMS data
+     * 
+     * Compares current WooCommerce product data with WMS data to determine
+     * if an update is needed based on multiple criteria:
+     * - Basic product information (name, description)
+     * - Pricing changes
+     * - Stock quantity changes
+     * - Physical dimensions and weight
+     * - WMS-specific metadata
+     * - Product attributes and custom fields
+     * 
+     * @param WC_Product $product WooCommerce product to check
+     * @param array $article WMS article data
+     * @param array $variant WMS variant data
+     * @return bool True if product needs update, false otherwise
+     * @throws Exception When product or data is invalid
+     * 
+     * @since 1.0.0
+     */
+    public function productNeedsUpdate(WC_Product $product, array $article, array $variant): bool {
+        if (!$product || !$product->get_id()) {
+            throw new Exception('Invalid product provided for update check');
+        }
+        
+        $this->validateRequiredArray($article, 'Article data');
+        $this->validateRequiredArray($variant, 'Variant data');
+        
+        $this->logFunctionEntry('productNeedsUpdate', [
+            'product_id' => $product->get_id(),
+            'article_id' => $article['id'] ?? 'unknown',
+            'variant_id' => $variant['id'] ?? 'unknown'
+        ]);
+        
+        // Check if basic product information has changed
+        if ($product->get_name() !== ($article['name'] ?? '')) {
+            $this->client->logger()->debug('Product name changed', [
+                'current' => $product->get_name(),
+                'new' => $article['name'] ?? ''
+            ]);
+            return true;
+        }
+        
+        if ($product->get_description() !== ($variant['description'] ?? '')) {
+            $this->client->logger()->debug('Product description changed');
+            return true;
+        }
+        
+        // Check if price has changed
+        if (!empty($variant['value']) && floatval($product->get_price()) !== floatval($variant['value'])) {
+            $this->client->logger()->debug('Product price changed', [
+                'current' => $product->get_price(),
+                'new' => $variant['value']
+            ]);
+            return true;
+        }
+        
+        // Check if stock has changed
+        if (isset($variant['stock_physical']) && intval($product->get_stock_quantity()) !== intval($variant['stock_physical'])) {
+            $this->client->logger()->debug('Product stock changed', [
+                'current' => $product->get_stock_quantity(),
+                'new' => $variant['stock_physical']
+            ]);
+            return true;
+        }
+        
+        // Check if dimensions have changed
+        if (!empty($variant['weight']) && floatval($product->get_weight()) !== floatval($variant['weight'])) {
+            return true;
+        }
+        
+        if (!empty($variant['height']) && floatval($product->get_height()) !== floatval($variant['height'])) {
+            return true;
+        }
+        
+        if (!empty($variant['width']) && floatval($product->get_width()) !== floatval($variant['width'])) {
+            return true;
+        }
+        
+        if (!empty($variant['depth']) && floatval($product->get_length()) !== floatval($variant['depth'])) {
+            return true;
+        }
+        
+        // Check if WMS article ID has changed
+        if (!empty($article['id']) && $product->get_meta('_wms_article_id') !== $article['id']) {
+            return true;
+        }
+        
+        // Check if WMS variant ID has changed
+        if (!empty($variant['id']) && $product->get_meta('_wms_variant_id') !== $variant['id']) {
+            return true;
+        }
+        
+        // Check if EAN has changed
+        if (!empty($variant['ean']) && $product->get_meta('_ean') !== $variant['ean']) {
+            return true;
+        }
+        
+        // Check if country of origin has changed
+        if (!empty($variant['country_of_origin']) && $product->get_meta('_country_of_origin') !== $variant['country_of_origin']) {
+            return true;
+        }
+        
+        // Check if HS tariff code has changed
+        if (!empty($variant['hs_tariff_code']) && $product->get_meta('_hs_tariff_code') !== $variant['hs_tariff_code']) {
+            return true;
+        }
+        
+        // Check if expirable status has changed
+        if (isset($variant['expirable'])) {
+            $currentExpirable = $product->get_meta('_expirable') === 'yes';
+            if ($currentExpirable !== $variant['expirable']) {
+                return true;
+            }
+        }
+        
+        // Check if serial number usage has changed
+        if (isset($variant['using_serial_numbers'])) {
+            $currentSerialNumbers = $product->get_meta('_using_serial_numbers') === 'yes';
+            if ($currentSerialNumbers !== $variant['using_serial_numbers']) {
+                return true;
+            }
+        }
+        
+        // If we get here, no changes were detected
+        $this->client->logger()->debug('No product changes detected');
+        return false;
+    }
+    
+    /**
+     * Update WooCommerce product with WMS data
+     * 
+     * Comprehensive product update that handles:
+     * - Basic product information (name, description, price)
+     * - Stock management and inventory
+     * - Physical dimensions and weight
+     * - WMS-specific metadata synchronization
+     * - Product attributes and custom fields
+     * 
+     * @param WC_Product $product WooCommerce product to update
+     * @param array $article WMS article data
+     * @param array $variant WMS variant data
+     * @return void
+     * @throws Exception When product or data is invalid
+     * 
+     * @since 1.0.0
+     */
+    public function updateWooCommerceProduct(WC_Product $product, array $article, array $variant): void {
+        if (!$product || !$product->get_id()) {
+            throw new Exception('Invalid product provided for update');
+        }
+        
+        $this->validateRequiredArray($article, 'Article data');
+        $this->validateRequiredArray($variant, 'Variant data');
+        
+        $this->logFunctionEntry('updateWooCommerceProduct', [
+            'product_id' => $product->get_id(),
+            'article_id' => $article['id'] ?? 'unknown',
+            'variant_id' => $variant['id'] ?? 'unknown'
+        ]);
+        
+        try {
+            // Update basic product information
+            if (!empty($article['name'])) {
+                $product->set_name($article['name']);
+            }
+            
+            if (!empty($variant['description'])) {
+                $product->set_description($variant['description']);
+                $product->set_short_description($variant['description']);
+            }
+            
+            // Update pricing
+            if (!empty($variant['value'])) {
+                $product->set_price($variant['value']);
+                $product->set_regular_price($variant['value']);
+            }
+            
+            // Update stock
+            if (isset($variant['stock_physical'])) {
+                $product->set_manage_stock(true);
+                $product->set_stock_quantity($variant['stock_physical']);
+                $product->set_stock_status($variant['stock_physical'] > 0 ? 'instock' : 'outofstock');
+            }
+            
+            // Update dimensions
+            if (!empty($variant['weight'])) {
+                $product->set_weight($variant['weight']);
+            }
+            if (!empty($variant['height'])) {
+                $product->set_height($variant['height']);
+            }
+            if (!empty($variant['width'])) {
+                $product->set_width($variant['width']);
+            }
+            if (!empty($variant['depth'])) {
+                $product->set_length($variant['depth']);
+            }
+            
+            // Update WMS metadata
+            if (!empty($article['id'])) {
+                $product->update_meta_data('_wms_article_id', $article['id']);
+            }
+            if (!empty($variant['id'])) {
+                $product->update_meta_data('_wms_variant_id', $variant['id']);
+            }
+            
+            // Update WMS-specific fields
+            if (!empty($variant['ean'])) {
+                $product->update_meta_data('_ean', $variant['ean']);
+            }
+            if (!empty($variant['hs_tariff_code'])) {
+                $product->update_meta_data('_hs_tariff_code', $variant['hs_tariff_code']);
+            }
+            if (!empty($variant['country_of_origin'])) {
+                $product->update_meta_data('_country_of_origin', $variant['country_of_origin']);
+            }
+            if (isset($variant['expirable'])) {
+                $product->update_meta_data('_expirable', $variant['expirable'] ? 'yes' : 'no');
+            }
+            if (isset($variant['using_serial_numbers'])) {
+                $product->update_meta_data('_using_serial_numbers', $variant['using_serial_numbers'] ? 'yes' : 'no');
+            }
+            
+            // Update sync metadata
+            $product->update_meta_data('_wms_synced', 'yes');
+            $product->update_meta_data('_wms_sync_date', current_time('mysql'));
+            $product->update_meta_data('_wms_sync_method', 'update');
+            
+            // Save product
+            $product->save();
+            
+            $this->logFunctionSuccess('updateWooCommerceProduct', [
+                'product_id' => $product->get_id(),
+                'article_id' => $article['id'] ?? 'unknown',
+                'variant_id' => $variant['id'] ?? 'unknown'
+            ]);
+            
+        } catch (Exception $e) {
+            $this->logFunctionError('updateWooCommerceProduct', $e, [
+                'product_id' => $product->get_id(),
+                'article' => $article,
+                'variant' => $variant
+            ]);
+            throw $e;
+        }
+    }
+    
+    /**
+     * Mark product as synced with WMS
+     * 
+     * @param WC_Product $product Product to mark as synced
+     * @param string $wmsArticleId WMS article ID to associate
+     * @throws Exception When product is invalid
+     */
+    public function markProductAsSynced(WC_Product $product, string $wmsArticleId): void {
+        if (!$product || !$product->get_id()) {
+            throw new Exception('Invalid product provided for sync marking');
+        }
+        
+        $this->validateRequiredString($wmsArticleId, 'WMS article ID');
+        
+        $product->update_meta_data('_wms_article_id', $wmsArticleId);
+        $product->update_meta_data('_wms_synced_at', current_time('mysql'));
+        $product->save();
+        
+        $this->logFunctionSuccess('markProductAsSynced', [
+            'product_id' => $product->get_id(),
+            'wms_article_id' => $wmsArticleId
+        ]);
     }
 }

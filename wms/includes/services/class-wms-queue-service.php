@@ -238,8 +238,8 @@ class WC_WMS_Queue_Service {
             return false;
         }
         
-        // Check if product should be synced
-        if (!$this->shouldSyncProduct($product)) {
+        // Check if product should be synced using centralized logic
+        if (!$this->wmsClient->productIntegrator()->shouldSyncProduct($product)) {
             return false;
         }
         
@@ -433,21 +433,4 @@ class WC_WMS_Queue_Service {
         }
     }
     
-    /**
-     * Check if product should be synced
-     */
-    private function shouldSyncProduct(WC_Product $product): bool {
-        // Skip virtual/downloadable products
-        if ($product->is_virtual() || $product->is_downloadable()) {
-            return false;
-        }
-        
-        // Skip products without SKU (configurable)
-        $requireSku = apply_filters('wc_wms_require_sku_for_sync', true);
-        if ($requireSku && !$product->get_sku()) {
-            return false;
-        }
-        
-        return apply_filters('wc_wms_should_sync_product', true, $product);
-    }
 }

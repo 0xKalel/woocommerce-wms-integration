@@ -162,6 +162,11 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
     
     /**
      * Check if product should be synced to WMS (Interface requirement)
+     * 
+     * SINGLE SOURCE OF TRUTH for product sync eligibility
+     * 
+     * @param WC_Product $product Product to check
+     * @return bool True if product should be synced, false otherwise
      */
     public function shouldSyncProduct(WC_Product $product): bool {
         // Don't sync if product is not published
@@ -174,8 +179,9 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
             return false;
         }
         
-        // Don't sync if product has no SKU
-        if (empty($product->get_sku())) {
+        // Don't sync if product has no SKU (configurable)
+        $requireSku = apply_filters('wc_wms_require_sku_for_sync', true);
+        if ($requireSku && empty($product->get_sku())) {
             return false;
         }
         
@@ -189,7 +195,8 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
             return false;
         }
         
-        return true;
+        // Allow filters to override the decision
+        return apply_filters('wc_wms_should_sync_product', true, $product);
     }
     
     /**
@@ -304,9 +311,13 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
         $existingProduct = $this->client->productSyncManager()->findProductBySku($sku);
         
         if ($existingProduct) {
-            // Update existing product
-            $result = $this->updateWooCommerceProductFromWMS($existingProduct, $wmsArticle, $variant);
-            $result['action'] = 'updated';
+            // Update existing product using centralized sync manager
+            $this->client->productSyncManager()->updateWooCommerceProduct($existingProduct, $wmsArticle, $variant);
+            $result = [
+                'product_id' => $existingProduct->get_id(),
+                'sku' => $existingProduct->get_sku(),
+                'action' => 'updated'
+            ];
         } else {
             // Create new product
             $product = $this->client->productSyncManager()->createSimpleProductFromVariant($variant, $sku);
@@ -779,87 +790,6 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
     }
     
     /**
-     * Import articles from WMS (alias for importAllProductsFromWMS)
-     */
-    public function importArticlesFromWMS(array $params = []): array {
-        return $this->importAllProductsFromWMS($params);
-    }
-    
-    /**
-     * Import all WMS articles to WooCommerce
-     */
-    public function importAllProductsFromWMS(array $params = []): array {
-        $this->client->logger()->info('Starting bulk product import from WMS', $params);
-        
-        // Use the enhanced method to get articles with variants
-        try {
-            $articles = $this->client->products()->getArticlesWithVariants($params);
-        } catch (Exception $e) {
-            $this->client->logger()->warning('Failed to get articles with variants, falling back to basic articles', [
-                'error' => $e->getMessage()
-            ]);
-            $articles = $this->client->products()->getArticles($params);
-        }
-        
-        // Handle different response structures
-        $articlesData = [];
-        if (isset($articles['results']) && is_array($articles['results'])) {
-            $articlesData = $articles['results'];
-        } elseif (isset($articles['data']) && is_array($articles['data'])) {
-            $articlesData = $articles['data'];
-        } elseif (is_array($articles)) {
-            $articlesData = $articles;
-        }
-        
-        $this->client->logger()->info('Articles retrieved for processing', [
-            'total_articles' => count($articlesData)
-        ]);
-        
-        $results = [
-            'created' => 0,
-            'updated' => 0,
-            'skipped' => 0,
-            'errors' => 0,
-            'error_details' => []
-        ];
-        
-        foreach ($articlesData as $wmsArticle) {
-            try {
-                $result = $this->syncProductFromWMS($wmsArticle);
-                
-                switch ($result['action']) {
-                    case 'created':
-                        $results['created']++;
-                        break;
-                    case 'updated':
-                        $results['updated']++;
-                        break;
-                    case 'skipped':
-                        $results['skipped']++;
-                        break;
-                }
-                
-            } catch (Exception $e) {
-                $results['errors']++;
-                $results['error_details'][] = [
-                    'wms_article_id' => $wmsArticle['id'] ?? 'unknown',
-                    'article_name' => $wmsArticle['name'] ?? 'unknown',
-                    'error' => $e->getMessage()
-                ];
-                
-                $this->client->logger()->error('Failed to import product from WMS', [
-                    'wms_article_id' => $wmsArticle['id'] ?? 'unknown',
-                    'error' => $e->getMessage()
-                ]);
-            }
-        }
-        
-        $this->client->logger()->info('Bulk product import from WMS completed', $results);
-        
-        return $results;
-    }
-    
-    /**
      * Create product in WMS
      */
     private function createProductInWMS(WC_Product $product, array $articleData): array {
@@ -896,47 +826,6 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
     /**
      * Update WooCommerce product from WMS article
      */
-    private function updateWooCommerceProductFromWMS(WC_Product $product, array $wmsArticle, array $variant): array {
-        // Update basic product data
-        $product->set_name($wmsArticle['name']);
-        $product->set_description($variant['description'] ?? '');
-        $product->set_regular_price($variant['value'] ?? 0);
-        $product->set_weight($variant['weight'] ?? 0);
-        
-        // Update dimensions
-        if (isset($variant['height'])) $product->set_height($variant['height']);
-        if (isset($variant['width'])) $product->set_width($variant['width']);
-        if (isset($variant['depth'])) $product->set_length($variant['depth']);
-        
-        // Update stock
-        $product->set_manage_stock(true);
-        $stockQuantity = $this->client->stock()->getVariantStockQuantity($variant['id'], $variant['sku'] ?? null);
-        $product->set_stock_quantity($stockQuantity);
-        $product->set_stock_status($stockQuantity > 0 ? 'instock' : 'outofstock');
-        
-        // Update WMS meta data
-        $product->update_meta_data('_wms_article_id', $wmsArticle['id']);
-        $product->update_meta_data('_wms_variant_id', $variant['id']);
-        $product->update_meta_data('_wms_article_code', $variant['article_code']);
-        $product->update_meta_data('_wms_synced_at', current_time('mysql'));
-        
-        // Save product
-        $product->save();
-        
-        $this->client->logger()->info('WooCommerce product updated from WMS', [
-            'product_id' => $product->get_id(),
-            'sku' => $product->get_sku(),
-            'wms_article_id' => $wmsArticle['id'],
-            'stock_quantity' => $stockQuantity
-        ]);
-        
-        return [
-            'product_id' => $product->get_id(),
-            'sku' => $product->get_sku(),
-            'stock_quantity' => $stockQuantity
-        ];
-    }
-    
     /**
      * Sync simple article from WMS (no variants)
      */
@@ -948,7 +837,24 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
         }
         
         if ($existingProduct) {
-            return $this->updateWooCommerceProductFromSimpleWMS($existingProduct, $wmsArticle);
+            // Convert article to variant-like structure for sync manager
+            $variant = [
+                'name' => $wmsArticle['name'],
+                'description' => $wmsArticle['description'] ?? '',
+                'sku' => 'WMS_' . $wmsArticle['id'],
+                'article_code' => 'WMS_' . $wmsArticle['id'],
+                'value' => 0,
+                'id' => $wmsArticle['id']
+            ];
+            
+            // Use centralized sync manager for updates
+            $this->client->productSyncManager()->updateWooCommerceProduct($existingProduct, $wmsArticle, $variant);
+            
+            return [
+                'product_id' => $existingProduct->get_id(),
+                'sku' => $existingProduct->get_sku(),
+                'action' => 'updated'
+            ];
         } else {
             // Convert article to variant-like structure for sync manager
             $variant = [
@@ -971,33 +877,6 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
                 throw new Exception('Failed to create product from simple article');
             }
         }
-    }
-    
-    /**
-     * Update WooCommerce product from simple WMS article
-     */
-    private function updateWooCommerceProductFromSimpleWMS(WC_Product $product, array $wmsArticle): array {
-        // Update basic product data
-        $product->set_name($wmsArticle['name']);
-        
-        // Update WMS meta data
-        $product->update_meta_data('_wms_article_id', $wmsArticle['id']);
-        $product->update_meta_data('_wms_synced_at', current_time('mysql'));
-        
-        // Save product
-        $product->save();
-        
-        $this->client->logger()->info('WooCommerce product updated from simple WMS article', [
-            'product_id' => $product->get_id(),
-            'sku' => $product->get_sku(),
-            'wms_article_id' => $wmsArticle['id']
-        ]);
-        
-        return [
-            'product_id' => $product->get_id(),
-            'sku' => $product->get_sku(),
-            'action' => 'updated'
-        ];
     }
     
     /**
