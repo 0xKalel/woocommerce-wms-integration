@@ -1128,7 +1128,7 @@ class WC_WMS_Order_Sync_Manager {
                 ]);
             } else {
                 // Create simple product if not found
-                $product = $this->createSimpleProductFromWMS($variant, $articleCode);
+                $product = $this->client->productSyncManager()->createSimpleProductFromVariant($variant, $articleCode);
                 if ($product) {
                     $order->add_product($product, $quantity);
                     $this->client->logger()->debug('Created and added new product to order', [
@@ -1151,50 +1151,6 @@ class WC_WMS_Order_Sync_Manager {
             'items_added' => $finalItemCount
         ]);
     }
-    
-    /**
-     * Create simple product from WMS variant data
-     */
-    private function createSimpleProductFromWMS(array $variant, string $articleCode): ?WC_Product {
-        try {
-            $product = new WC_Product_Simple();
-            
-            $name = $variant['name'] ?? $articleCode;
-            $product->set_name($name);
-            $product->set_sku($articleCode);
-            $product->set_description($variant['description'] ?? '');
-            $product->set_status('publish');
-            $product->set_catalog_visibility('visible');
-            $product->set_price($variant['value'] ?? 0);
-            $product->set_regular_price($variant['value'] ?? 0);
-            $product->set_manage_stock(true);
-            $product->set_stock_status('instock');
-            
-            // Set WMS metadata
-            $product->update_meta_data('_wms_variant_id', $variant['id'] ?? '');
-            $product->update_meta_data('_wms_synced', 'yes');
-            $product->update_meta_data('_wms_sync_date', current_time('mysql'));
-            
-            $product->save();
-            
-            $this->client->logger()->info('Created new product from WMS variant', [
-                'product_id' => $product->get_id(),
-                'sku' => $articleCode,
-                'wms_variant_id' => $variant['id'] ?? ''
-            ]);
-            
-            return $product;
-            
-        } catch (Exception $e) {
-            $this->client->logger()->error('Failed to create product from WMS variant', [
-                'variant' => $variant,
-                'error' => $e->getMessage()
-            ]);
-            
-            return null;
-        }
-    }
-    
     /**
      * Set WMS metadata on order
      */

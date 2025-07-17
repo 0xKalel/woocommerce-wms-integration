@@ -309,8 +309,16 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
             $result['action'] = 'updated';
         } else {
             // Create new product
-            $result = $this->createWooCommerceProductFromWMS($wmsArticle, $variant);
-            $result['action'] = 'created';
+            $product = $this->client->productSyncManager()->createSimpleProductFromVariant($variant, $sku);
+            if ($product) {
+                $result = [
+                    'product_id' => $product->get_id(),
+                    'sku' => $product->get_sku(),
+                    'action' => 'created'
+                ];
+            } else {
+                throw new Exception('Failed to create product from variant');
+            }
         }
         
         return $result;
@@ -886,53 +894,6 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
     }
     
     /**
-     * Create WooCommerce product from WMS article
-     */
-    private function createWooCommerceProductFromWMS(array $wmsArticle, array $variant): array {
-        $product = new WC_Product_Simple();
-        
-        // Set basic product data
-        $product->set_name($wmsArticle['name']);
-        $product->set_description($variant['description'] ?? '');
-        $product->set_sku($variant['sku'] ?? $variant['article_code']);
-        $product->set_regular_price($variant['value'] ?? 0);
-        $product->set_weight($variant['weight'] ?? 0);
-        
-        // Set dimensions
-        if (isset($variant['height'])) $product->set_height($variant['height']);
-        if (isset($variant['width'])) $product->set_width($variant['width']);
-        if (isset($variant['depth'])) $product->set_length($variant['depth']);
-        
-        // Set stock management
-        $product->set_manage_stock(true);
-        $stockQuantity = $this->client->stock()->getVariantStockQuantity($variant['id'], $variant['sku'] ?? null);
-        $product->set_stock_quantity($stockQuantity);
-        $product->set_stock_status($stockQuantity > 0 ? 'instock' : 'outofstock');
-        
-        // Set WMS meta data
-        $product->update_meta_data('_wms_article_id', $wmsArticle['id']);
-        $product->update_meta_data('_wms_variant_id', $variant['id']);
-        $product->update_meta_data('_wms_article_code', $variant['article_code']);
-        $product->update_meta_data('_wms_synced_at', current_time('mysql'));
-        
-        // Save product
-        $productId = $product->save();
-        
-        $this->client->logger()->info('WooCommerce product created from WMS', [
-            'product_id' => $productId,
-            'sku' => $variant['sku'] ?? $variant['article_code'],
-            'wms_article_id' => $wmsArticle['id'],
-            'stock_quantity' => $stockQuantity
-        ]);
-        
-        return [
-            'product_id' => $productId,
-            'sku' => $variant['sku'] ?? $variant['article_code'],
-            'stock_quantity' => $stockQuantity
-        ];
-    }
-    
-    /**
      * Update WooCommerce product from WMS article
      */
     private function updateWooCommerceProductFromWMS(WC_Product $product, array $wmsArticle, array $variant): array {
@@ -989,48 +950,27 @@ class WC_WMS_Product_Integrator implements WC_WMS_Product_Integrator_Interface {
         if ($existingProduct) {
             return $this->updateWooCommerceProductFromSimpleWMS($existingProduct, $wmsArticle);
         } else {
-            return $this->createWooCommerceProductFromSimpleWMS($wmsArticle);
+            // Convert article to variant-like structure for sync manager
+            $variant = [
+                'name' => $wmsArticle['name'],
+                'description' => $wmsArticle['description'] ?? '',
+                'sku' => 'WMS_' . $wmsArticle['id'],
+                'article_code' => 'WMS_' . $wmsArticle['id'],
+                'value' => 0,
+                'id' => $wmsArticle['id']
+            ];
+            
+            $product = $this->client->productSyncManager()->createSimpleProductFromVariant($variant, $variant['sku']);
+            if ($product) {
+                return [
+                    'product_id' => $product->get_id(),
+                    'sku' => $product->get_sku(),
+                    'action' => 'created'
+                ];
+            } else {
+                throw new Exception('Failed to create product from simple article');
+            }
         }
-    }
-    
-    /**
-     * Create WooCommerce product from simple WMS article
-     */
-    private function createWooCommerceProductFromSimpleWMS(array $wmsArticle): array {
-        $product = new WC_Product_Simple();
-        
-        // Set basic product data
-        $product->set_name($wmsArticle['name']);
-        $product->set_description('');
-        
-        // Generate SKU from article ID
-        $sku = 'WMS_' . $wmsArticle['id'];
-        $product->set_sku($sku);
-        $product->set_regular_price(0);
-        
-        // Set stock management
-        $product->set_manage_stock(true);
-        $product->set_stock_quantity(0);
-        $product->set_stock_status('outofstock');
-        
-        // Set WMS meta data
-        $product->update_meta_data('_wms_article_id', $wmsArticle['id']);
-        $product->update_meta_data('_wms_synced_at', current_time('mysql'));
-        
-        // Save product
-        $productId = $product->save();
-        
-        $this->client->logger()->info('WooCommerce product created from simple WMS article', [
-            'product_id' => $productId,
-            'sku' => $sku,
-            'wms_article_id' => $wmsArticle['id']
-        ]);
-        
-        return [
-            'product_id' => $productId,
-            'sku' => $sku,
-            'action' => 'created'
-        ];
     }
     
     /**
