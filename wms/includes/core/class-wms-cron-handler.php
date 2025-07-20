@@ -33,6 +33,9 @@ class WC_WMS_Cron_Handler {
         // Webhook management hooks
         add_action('wc_wms_check_stuck_webhooks', [__CLASS__, 'checkStuckWebhooks']);
         add_action('wc_wms_webhook_health_check', [__CLASS__, 'healthCheckWebhookQueue']);
+        
+        // NEW: Sync jobs processor
+        add_action('wc_wms_process_sync_jobs', [__CLASS__, 'processSyncJobs']);
     }
     
     /**
@@ -67,6 +70,13 @@ class WC_WMS_Cron_Handler {
             date('Y-m-d H:i:s', strtotime('-30 days'))
         ));
         
+        // Sync jobs queue (NEW)
+        $sync_jobs_table = $wpdb->prefix . 'wc_wms_sync_jobs';
+        $deleted_sync_completed = $wpdb->query($wpdb->prepare(
+            "DELETE FROM $sync_jobs_table WHERE status IN ('completed', 'failed') AND completed_at < %s",
+            date('Y-m-d H:i:s', strtotime('-7 days'))
+        ));
+        
         // Webhook processing queue
         $webhook_queue_table = $wpdb->prefix . WC_WMS_Constants::TABLE_WEBHOOK_PROCESSING_QUEUE;
         $deleted_webhook_processed = $wpdb->query($wpdb->prepare(
@@ -80,13 +90,14 @@ class WC_WMS_Cron_Handler {
         ));
         
         // Log results
-        if ($deleted_completed > 0 || $deleted_failed > 0 || $deleted_product_completed > 0 || $deleted_product_failed > 0) {
+        if ($deleted_completed > 0 || $deleted_failed > 0 || $deleted_product_completed > 0 || $deleted_product_failed > 0 || $deleted_sync_completed > 0) {
             error_log(sprintf(
-                'WMS Integration: Queue cleanup completed. Removed %d order completed, %d order failed, %d product completed, %d product failed items.',
+                'WMS Integration: Queue cleanup completed. Removed %d order completed, %d order failed, %d product completed, %d product failed, %d sync jobs.',
                 $deleted_completed,
                 $deleted_failed,
                 $deleted_product_completed,
-                $deleted_product_failed
+                $deleted_product_failed,
+                $deleted_sync_completed
             ));
         }
     }
@@ -604,6 +615,47 @@ class WC_WMS_Cron_Handler {
             
         } catch (Exception $e) {
             error_log('WMS Integration: Webhook cleanup failed: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Process sync jobs (NEW: Queue-based sync system)
+     */
+    public static function processSyncJobs(): void {
+        try {
+            $syncJobsManager = new WC_WMS_Sync_Jobs_Manager();
+            
+            // Process up to 5 jobs per cron run to prevent timeout
+            $jobs_processed = 0;
+            $max_jobs = 5;
+            
+            while ($jobs_processed < $max_jobs) {
+                $result = $syncJobsManager->processNextJob();
+                
+                if ($result === null) {
+                    // No more jobs to process
+                    break;
+                }
+                
+                $jobs_processed++;
+                
+                // If a job failed, log it but continue processing
+                if (!$result['success']) {
+                    error_log('WMS Integration: Sync job failed - ' . $result['error']);
+                }
+            }
+            
+            if ($jobs_processed > 0) {
+                error_log("WMS Integration: Processed {$jobs_processed} sync jobs via cron");
+                
+                // Schedule next run immediately if there might be more jobs
+                if ($jobs_processed >= $max_jobs) {
+                    wp_schedule_single_event(time() + 30, 'wc_wms_process_sync_jobs');
+                }
+            }
+            
+        } catch (Exception $e) {
+            error_log('WMS Integration: Sync jobs processing failed: ' . $e->getMessage());
         }
     }
 }

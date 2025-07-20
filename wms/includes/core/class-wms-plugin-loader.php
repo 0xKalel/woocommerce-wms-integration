@@ -87,6 +87,7 @@ class WC_WMS_Plugin_Loader {
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/services/class-wms-gdpr-service.php';
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/services/class-wms-queue-service.php';
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/services/class-wms-logging-service.php';
+        include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/services/class-wms-sync-jobs-manager.php';
     }
     
     /**

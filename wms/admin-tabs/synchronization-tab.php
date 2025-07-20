@@ -300,7 +300,7 @@ global $wpdb;
         if ($initial_sync_completed) {
             // Show regular import button after initial sync
             ?>
-            <button type="button" class="button button-primary" onclick="importEverything()" style="font-size: 16px; padding: 10px 20px;">
+            <button type="button" class="button button-primary sync-everything-btn" onclick="importEverything()" style="font-size: 16px; padding: 10px 20px;">
                 <?php _e('🔄 Import Everything from WMS', 'wc-wms-integration'); ?>
             </button>
             <p class="description"><?php _e('Imports shipping methods, articles, customers, orders, inbounds, shipments, and stock levels from WMS to WooCommerce, then tests connection', 'wc-wms-integration'); ?></p>
@@ -308,7 +308,7 @@ global $wpdb;
         } else {
             // Show prominent initial sync button
             ?>
-            <button type="button" class="button button-primary" onclick="importEverything()" style="font-size: 18px; padding: 15px 30px; background: #ff6b00; border-color: #ff6b00; box-shadow: 0 0 10px rgba(255, 107, 0, 0.3);">
+            <button type="button" class="button button-primary sync-everything-btn" onclick="importEverything()" style="font-size: 18px; padding: 15px 30px; background: #ff6b00; border-color: #ff6b00; box-shadow: 0 0 10px rgba(255, 107, 0, 0.3);">
                 <?php _e('🚀 Complete Initial Sync - Enable Automation', 'wc-wms-integration'); ?>
             </button>
             <p class="description" style="font-weight: bold; color: #ff6b00;"><?php _e('⚠️ This will enable automatic synchronization processes (webhooks, orders, stock sync). Required before normal operations.', 'wc-wms-integration'); ?></p>

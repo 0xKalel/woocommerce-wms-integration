@@ -22,6 +22,7 @@ class WC_WMS_Database_Manager {
         self::createWebhookIdsTable();
         self::createProductSyncQueueTable();
         self::createWebhookProcessingQueueTable();
+        self::createSyncJobsTable(); // NEW: Sync jobs table
     }
     
     /**
@@ -189,6 +190,38 @@ class WC_WMS_Database_Manager {
     }
     
     /**
+     * Create sync jobs table for queue-based sync system
+     */
+    private static function createSyncJobsTable(): void {
+        global $wpdb;
+        
+        $table_name = $wpdb->prefix . 'wc_wms_sync_jobs';
+        $charset_collate = $wpdb->get_charset_collate();
+        
+        $sql = "CREATE TABLE IF NOT EXISTS $table_name (
+            id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+            batch_id varchar(50) NOT NULL,
+            job_type varchar(50) NOT NULL,
+            priority int(11) NOT NULL DEFAULT 0,
+            status enum('pending','processing','completed','failed') NOT NULL DEFAULT 'pending',
+            result_data longtext,
+            error_message text,
+            created_at datetime NOT NULL,
+            started_at datetime NULL,
+            completed_at datetime NULL,
+            updated_at datetime NOT NULL,
+            PRIMARY KEY (id),
+            KEY batch_id (batch_id),
+            KEY status (status),
+            KEY priority (priority),
+            KEY created_at (created_at)
+        ) $charset_collate;";
+        
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        dbDelta($sql);
+    }
+    
+    /**
      * Clean up database tables on plugin deactivation
      */
     public static function cleanup(): void {
@@ -228,6 +261,13 @@ class WC_WMS_Database_Manager {
         $wpdb->query($wpdb->prepare(
             "DELETE FROM $webhook_logs_table WHERE created_at < %s",
             date('Y-m-d H:i:s', strtotime('-30 days'))
+        ));
+        
+        // Clean up old sync jobs
+        $sync_jobs_table = $wpdb->prefix . 'wc_wms_sync_jobs';
+        $wpdb->query($wpdb->prepare(
+            "DELETE FROM $sync_jobs_table WHERE status IN ('completed', 'failed') AND completed_at < %s",
+            date('Y-m-d H:i:s', strtotime('-7 days'))
         ));
     }
 }

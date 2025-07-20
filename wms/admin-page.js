@@ -375,68 +375,46 @@ function syncLocationTypes() {
     });
 }
 
-// Import everything function
+// Import everything function - NEW: Queue-based with polling
 function importEverything() {
     // Check if this is the initial sync
     var isInitialSync = !jQuery('.initial-sync-status .notice-success').length;
     
     var confirmMessage = isInitialSync ? 
-        'This will complete the INITIAL SYNC and enable automatic synchronization processes (webhooks, orders, stock sync).\n\nThis will import shipping methods, articles, customers, orders, inbounds, shipments, and stock from WMS.\n\nThis may take a few minutes. Continue?' :
-        'This will import shipping methods, articles, customers, orders, inbounds, shipments, and stock from WMS, then test connection. This may take a few minutes. Continue?';
+        'This will complete the INITIAL SYNC and enable automatic synchronization processes (webhooks, orders, stock sync).\n\nThis will queue individual sync jobs and show real-time progress.\n\nContinue?' :
+        'This will queue sync jobs for: connection test, webhooks, shipping methods, articles, customers, orders, inbounds, shipments, and stock.\n\nReal-time progress will be shown. Continue?';
     
     if (!confirm(confirmMessage)) {
         return;
     }
     
     var button = event.target;
+    var originalText = button.textContent;
     button.disabled = true;
-    button.textContent = isInitialSync ? '🚀 Completing Initial Sync...' : '🔄 Importing...';
+    button.textContent = isInitialSync ? '🚀 Starting Initial Sync...' : '🔄 Starting Sync Jobs...';
     
+    // Create modern progress container
+    var progressContainer = createModernProgressContainer(button);
+    
+    // Start the sync jobs
     jQuery.post(ajaxurl, {
-        action: 'wc_wms_sync_everything',
+        action: 'wc_wms_start_sync_jobs',
         nonce: (typeof WC_WMS_ADMIN_NONCE !== 'undefined' ? WC_WMS_ADMIN_NONCE : '')
     }, function(response) {
         if (response.success) {
-            var result = response.data;
-            var results = result.results || result; // Handle both new and old response structures
+            var batch_id = response.data.batch_id;
+            updateProgressContainer(progressContainer, 'Sync jobs started! Processing...', 0, 'running');
             
-            var message = isInitialSync ? 
-                '🚀 Initial sync completed successfully!\n\nAutomatic synchronization processes are now enabled.\n\n' :
-                'Import from WMS completed:\n';
-            message += '• Connection: ' + (results.connection ? 'OK' : 'Failed') + '\n';
-            message += '• Shipping Methods: ' + (results.shipping_methods || 'Done') + '\n';
-            message += '• Articles: ' + (results.articles || results.products || 'Done') + '\n';
-            message += '• Customers: ' + (results.customers || 'Done') + '\n';
-            message += '• Orders: ' + (results.orders || 'Done') + '\n';
-            message += '• Inbounds: ' + (results.inbounds || 'Done') + '\n';
-            message += '• Shipments: ' + (results.shipments || 'Done') + '\n';
-            message += '• Stock: ' + (results.stock || 'Done') + '\n';
+            // Start polling for progress
+            startSyncProgressPolling(batch_id, progressContainer, isInitialSync);
             
-            // Show additional info if available
-            if (result.error_count && result.error_count > 0) {
-                message += '\n⚠️  Note: Some components had issues (' + result.error_count + ' warnings)';
-                message += '\nOverall Status: ' + (result.setup_success ? 'Success' : 'Partial Success');
-            } else {
-                message += '\n✅ All components completed successfully!';
-            }
-            
-            alert(message);
-            
-            // Reload page after initial sync to update UI
-            if (isInitialSync) {
-                window.location.reload();
-            }
         } else {
-            var errorMsg = 'Import failed: ';
-            if (response.data && response.data.message) {
-                errorMsg += response.data.message;
-            } else {
-                errorMsg += (response.data || 'Unknown error');
-            }
-            alert(errorMsg);
+            var errorMsg = 'Failed to start sync jobs: ' + (response.data || 'Unknown error');
+            updateProgressContainer(progressContainer, errorMsg, 0, 'error');
+            resetSyncButton(button, originalText);
         }
     }).fail(function(xhr, status, error) {
-        var errorMsg = 'Sync request failed: ' + error;
+        var errorMsg = 'Request failed: ' + error;
         if (xhr.responseText) {
             try {
                 var errorResponse = JSON.parse(xhr.responseText);
@@ -447,18 +425,199 @@ function importEverything() {
                 errorMsg += '\nResponse: ' + xhr.responseText.substring(0, 200);
             }
         }
-        alert(errorMsg);
-        console.error('Sync Everything Failed:', {
+        updateProgressContainer(progressContainer, errorMsg, 0, 'error');
+        resetSyncButton(button, originalText);
+        
+        console.error('Start Sync Jobs Failed:', {
             status: status,
             error: error,
             responseText: xhr.responseText,
             statusCode: xhr.status
         });
-    }).always(function() {
-        button.disabled = false;
-        button.textContent = '🔄 Import Everything from WMS';
-        location.reload();
     });
+}
+
+// Create modern progress container
+function createModernProgressContainer(button) {
+    var container = jQuery('<div class="sync-progress-container" style="margin-top: 15px; padding: 20px; background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"></div>');
+    
+    var header = jQuery('<div class="progress-header"><h4 style="margin: 0 0 10px 0; color: #495057;">🔄 Sync Progress</h4></div>');
+    var progressBar = jQuery('<div class="progress-bar-container" style="width: 100%; background: #e9ecef; border-radius: 4px; overflow: hidden; height: 20px; margin-bottom: 10px;"><div class="progress-bar" style="height: 100%; background: linear-gradient(90deg, #007cba, #00a0d2); width: 0%; transition: width 0.3s ease;"></div></div>');
+    var statusText = jQuery('<div class="progress-status" style="font-weight: 500; margin-bottom: 10px;">Initializing...</div>');
+    var jobsList = jQuery('<div class="jobs-list" style="font-size: 14px;"></div>');
+    
+    container.append(header).append(progressBar).append(statusText).append(jobsList);
+    jQuery(button).after(container);
+    
+    return container;
+}
+
+// Update progress container
+function updateProgressContainer(container, statusText, percentage, status) {
+    var progressBar = container.find('.progress-bar');
+    var statusDiv = container.find('.progress-status');
+    
+    statusDiv.text(statusText);
+    progressBar.css('width', percentage + '%');
+    
+    // Update colors based on status
+    switch (status) {
+        case 'running':
+            progressBar.css('background', 'linear-gradient(90deg, #007cba, #00a0d2)');
+            statusDiv.css('color', '#007cba');
+            break;
+        case 'completed':
+            progressBar.css('background', 'linear-gradient(90deg, #46b450, #00a32a)');
+            statusDiv.css('color', '#00a32a');
+            break;
+        case 'error':
+            progressBar.css('background', 'linear-gradient(90deg, #dc3232, #b32d2e)');
+            statusDiv.css('color', '#dc3232');
+            break;
+        case 'completed_with_errors':
+            progressBar.css('background', 'linear-gradient(90deg, #ffb900, #f56e28)');
+            statusDiv.css('color', '#f56e28');
+            break;
+    }
+}
+
+// Start sync progress polling
+function startSyncProgressPolling(batch_id, progressContainer, isInitialSync) {
+    var pollInterval = 2000; // Poll every 2 seconds
+    var pollCount = 0;
+    var maxPolls = 300; // Maximum 10 minutes of polling
+    
+    var poll = function() {
+        pollCount++;
+        
+        if (pollCount > maxPolls) {
+            updateProgressContainer(progressContainer, 'Polling timeout - sync may still be running', 0, 'error');
+            resetSyncButton(jQuery('.sync-everything-btn'), 'Sync Everything');
+            return;
+        }
+        
+        jQuery.post(ajaxurl, {
+            action: 'wc_wms_get_sync_progress',
+            batch_id: batch_id,
+            nonce: (typeof WC_WMS_ADMIN_NONCE !== 'undefined' ? WC_WMS_ADMIN_NONCE : '')
+        }, function(response) {
+            if (response.success) {
+                var progress = response.data;
+                displaySyncProgress(progress, progressContainer, isInitialSync);
+                
+                // Continue polling if not finished
+                if (progress.overall_status === 'running' || progress.overall_status === 'pending') {
+                    setTimeout(poll, pollInterval);
+                } else {
+                    // Sync completed
+                    handleSyncCompletion(progress, progressContainer, isInitialSync);
+                }
+            } else {
+                updateProgressContainer(progressContainer, 'Failed to get progress: ' + response.data, 0, 'error');
+                resetSyncButton(jQuery('.sync-everything-btn'), 'Sync Everything');
+            }
+        }).fail(function() {
+            // Retry on failure
+            setTimeout(poll, pollInterval * 2);
+        });
+    };
+    
+    // Start polling
+    setTimeout(poll, 1000);
+}
+
+// Display sync progress
+function displaySyncProgress(progress, progressContainer, isInitialSync) {
+    var statusText = 'Processing ' + progress.completed_jobs + '/' + progress.total_jobs + ' jobs';
+    if (progress.current_job) {
+        statusText += ' - ' + progress.current_job.title;
+    }
+    
+    updateProgressContainer(progressContainer, statusText, progress.percentage, progress.overall_status);
+    
+    // Update jobs list
+    var jobsList = progressContainer.find('.jobs-list');
+    jobsList.empty();
+    
+    progress.jobs.forEach(function(job) {
+        var icon = getJobStatusIcon(job.status);
+        var jobDiv = jQuery('<div class="job-item" style="margin: 5px 0; padding: 8px; background: #fff; border-radius: 4px; border-left: 3px solid ' + getJobStatusColor(job.status) + ';"><span style="margin-right: 8px;">' + icon + '</span>' + job.title + '</div>');
+        
+        if (job.error) {
+            jobDiv.append('<div style="color: #dc3232; font-size: 12px; margin-top: 4px;">Error: ' + job.error + '</div>');
+        }
+        
+        jobsList.append(jobDiv);
+    });
+}
+
+// Get job status icon
+function getJobStatusIcon(status) {
+    switch (status) {
+        case 'completed': return '✅';
+        case 'processing': return '🔄';
+        case 'failed': return '❌';
+        default: return '⏳';
+    }
+}
+
+// Get job status color
+function getJobStatusColor(status) {
+    switch (status) {
+        case 'completed': return '#00a32a';
+        case 'processing': return '#007cba';
+        case 'failed': return '#dc3232';
+        default: return '#8c8f94';
+    }
+}
+
+// Handle sync completion
+function handleSyncCompletion(progress, progressContainer, isInitialSync) {
+    var button = jQuery('.sync-everything-btn');
+    var originalText = 'Sync Everything';
+    
+    if (progress.overall_status === 'completed') {
+        var message = isInitialSync ? 
+            '🚀 Initial sync completed successfully! All automatic processes are now enabled.' :
+            '✅ Sync completed successfully!';
+            
+        updateProgressContainer(progressContainer, message, 100, 'completed');
+        
+        // Show summary
+        setTimeout(function() {
+            var summary = 'Sync Summary:\n';
+            summary += '• Total Jobs: ' + progress.total_jobs + '\n';
+            summary += '• Completed: ' + progress.completed_jobs + '\n';
+            summary += '• Failed: ' + progress.failed_jobs + '\n';
+            
+            if (progress.failed_jobs === 0) {
+                summary += '\n✅ All components completed successfully!';
+            }
+            
+            alert(summary);
+            
+            // Reload page after initial sync
+            if (isInitialSync && progress.failed_jobs === 0) {
+                window.location.reload();
+            }
+        }, 2000);
+        
+    } else {
+        var message = 'Sync completed with issues (' + progress.failed_jobs + ' failed jobs)';
+        updateProgressContainer(progressContainer, message, progress.percentage, 'completed_with_errors');
+        
+        setTimeout(function() {
+            alert('Sync completed with some issues. Check the job details above for more information.');
+        }, 1000);
+    }
+    
+    resetSyncButton(button, originalText);
+}
+
+// Reset sync button
+function resetSyncButton(button, originalText) {
+    button.prop('disabled', false);
+    button.text(originalText || 'Sync Everything');
 }
 
 // Customer import functions
@@ -1250,145 +1409,222 @@ function refreshStoredData() {
     location.reload();
 }
 
-// Sync everything function (one-click setup)
+// Sync everything function (one-click setup) - NEW: Queue-based system
 function syncEverything() {
     var button = event.target;
     var originalText = button.textContent;
     
     // Disable button and show progress
     button.disabled = true;
-    button.textContent = '🔄 Setting up integration...';
+    button.textContent = '🔄 Starting setup...';
     
     // Show progress section
     jQuery('#sync-progress').show();
     jQuery('#sync-results').hide();
     
-    // Initialize progress display
+    // Initialize setup-specific progress steps (matching our sync jobs)
     var progressSteps = [
-        'Testing connection...',
-        'Registering webhooks...',
-        'Syncing shipping methods...',
-        'Importing articles/products...',
-        'Syncing stock levels...',
-        'Syncing orders from WMS...',
-        'Auto-mapping shipping methods...'
+        { key: 'connection_test', label: 'Testing WMS connection...' },
+        { key: 'webhook_registration', label: 'Registering webhooks...' },
+        { key: 'shipping_methods', label: 'Syncing shipping methods...' },
+        { key: 'location_types', label: 'Syncing location types...' },
+        { key: 'articles_import', label: 'Importing articles/products...' },
+        { key: 'stock_sync', label: 'Syncing stock levels...' },
+        { key: 'customers_import', label: 'Importing customers...' },
+        { key: 'orders_sync', label: 'Syncing orders from WMS...' },
+        { key: 'inbounds_sync', label: 'Syncing inbounds...' },
+        { key: 'shipments_sync', label: 'Syncing shipments...' }
     ];
     
+    // Create progress display
     var progressHtml = '<ul style="list-style: none; padding: 0; margin: 0;">';
     progressSteps.forEach(function(step, index) {
-        progressHtml += '<li id="step-' + index + '" style="margin: 5px 0; padding: 5px; background: #f0f0f0; border-radius: 3px;">';
-        progressHtml += '⏳ ' + step + '</li>';
+        progressHtml += '<li id="setup-step-' + step.key + '" style="margin: 5px 0; padding: 5px; background: #f0f0f0; border-radius: 3px;">';
+        progressHtml += '⏳ ' + step.label + '</li>';
     });
     progressHtml += '</ul>';
     
     jQuery('#progress-steps').html(progressHtml);
     
-    // Simulate progress updates (since we can't get real-time updates from PHP)
-    var currentStep = 0;
-    var progressInterval = setInterval(function() {
-        if (currentStep < progressSteps.length) {
-            jQuery('#step-' + currentStep).html('⚙️ ' + progressSteps[currentStep] + ' <span style="color: #0073aa;">in progress...</span>');
-            currentStep++;
-        }
-    }, 3000); // Update every 3 seconds
-    
-    // Make AJAX call
+    // Start queue-based sync
     jQuery.post(ajaxurl, {
-        action: 'wc_wms_sync_everything',
+        action: 'wc_wms_start_sync_jobs',
         nonce: (typeof WC_WMS_ADMIN_NONCE !== 'undefined' ? WC_WMS_ADMIN_NONCE : '')
     }, function(response) {
-        clearInterval(progressInterval);
-        
         if (response.success) {
-            // Update all progress steps as completed
-            progressSteps.forEach(function(step, index) {
-                var stepElement = jQuery('#step-' + index);
-                if (index < progressSteps.length - 1) {
-                    stepElement.html('✅ ' + step.replace('...', ' - completed'));
-                } else {
-                    stepElement.html('✅ ' + step.replace('...', ' - completed'));
-                }
-                stepElement.css('background', '#d1ecf1');
-            });
+            var batch_id = response.data.batch_id;
+            button.textContent = '🔄 Processing jobs...';
             
-            // Show detailed results
-            var resultsHtml = '<div style="background: #d1ecf1; padding: 15px; border-radius: 5px; margin: 10px 0;">';
-            resultsHtml += '<h4 style="margin: 0 0 10px 0; color: #0f5132;">✅ Setup Completed Successfully!</h4>';
-            
-            if (response.data.results) {
-                resultsHtml += '<ul style="margin: 0; padding-left: 20px;">';
-                Object.keys(response.data.results).forEach(function(key) {
-                    var result = response.data.results[key];
-                    var icon = result.startsWith('success') ? '✅' : '❌';
-                    var capitalizedKey = key.charAt(0).toUpperCase() + key.slice(1);
-                    resultsHtml += '<li><strong>' + capitalizedKey + ':</strong> ' + icon + ' ' + result + '</li>';
-                });
-                resultsHtml += '</ul>';
-            }
-            
-            if (response.data.next_steps) {
-                resultsHtml += '<div style="margin-top: 15px; padding: 10px; background: white; border-radius: 3px;">';
-                resultsHtml += '<h5 style="margin: 0 0 5px 0;">🎯 Next Steps:</h5>';
-                resultsHtml += '<ul style="margin: 0; padding-left: 20px;">';
-                response.data.next_steps.forEach(function(step) {
-                    resultsHtml += '<li>' + step + '</li>';
-                });
-                resultsHtml += '</ul></div>';
-            }
-            
-            resultsHtml += '</div>';
-            
-            // Show success message with page reload option
-            resultsHtml += '<div style="text-align: center; margin-top: 15px;">';
-            resultsHtml += '<button type="button" class="button button-primary" onclick="location.reload()" style="padding: 10px 20px;">';
-            resultsHtml += '🔄 Refresh Page to See Updates</button>';
-            resultsHtml += '</div>';
-            
-            jQuery('#results-content').html(resultsHtml);
-            jQuery('#sync-results').show();
+            // Start polling for progress with setup-specific UI updates
+            startSetupProgressPolling(batch_id, progressSteps, button, originalText);
             
         } else {
-            // Show error
-            var errorHtml = '<div style="background: #f8d7da; padding: 15px; border-radius: 5px; color: #721c24;">';
-            errorHtml += '<h4 style="margin: 0 0 10px 0;">❌ Setup Failed</h4>';
-            errorHtml += '<p>' + (response.data || 'Unknown error occurred') + '</p>';
-            
-            if (response.data && response.data.results) {
-                errorHtml += '<h5>Detailed Results:</h5><ul style="margin: 0; padding-left: 20px;">';
-                Object.keys(response.data.results).forEach(function(key) {
-                    var result = response.data.results[key];
-                    var icon = result.startsWith('success') ? '✅' : '❌';
-                    errorHtml += '<li><strong>' + key + ':</strong> ' + icon + ' ' + result + '</li>';
-                });
-                errorHtml += '</ul>';
-            }
-            
-            errorHtml += '<p style="margin-top: 10px;"><em>Check the logs for more details or try individual sync operations in the Advanced section below.</em></p>';
-            errorHtml += '</div>';
-            
-            jQuery('#results-content').html(errorHtml);
-            jQuery('#sync-results').show();
-            
-            // Update progress steps to show failure
-            progressSteps.forEach(function(step, index) {
-                jQuery('#step-' + index).css('background', '#f8d7da');
-            });
+            showSetupError('Failed to start sync jobs: ' + (response.data || 'Unknown error'), button, originalText);
         }
     }).fail(function(xhr, status, error) {
-        clearInterval(progressInterval);
-        
-        var errorHtml = '<div style="background: #f8d7da; padding: 15px; border-radius: 5px; color: #721c24;">';
-        errorHtml += '<h4 style="margin: 0 0 10px 0;">❌ Setup Failed</h4>';
-        errorHtml += '<p>AJAX request failed: ' + error + '</p>';
-        errorHtml += '<p><em>Please check your connection and try again.</em></p>';
-        errorHtml += '</div>';
-        
-        jQuery('#results-content').html(errorHtml);
-        jQuery('#sync-results').show();
-        
-    }).always(function() {
-        // Re-enable button
-        button.disabled = false;
-        button.textContent = originalText;
+        var errorMsg = 'AJAX request failed:\n*' + error + '*\n';
+        if (xhr.responseText && xhr.responseText.length < 200) {
+            errorMsg += '1. ction\n' + 'wc_wms_start_sync_jobs' + '\n';
+            errorMsg += '2. nonce\n' + (typeof WC_WMS_ADMIN_NONCE !== 'undefined' ? WC_WMS_ADMIN_NONCE.substring(0,10) : 'undefined') + '\n';
+            errorMsg += 'response is empty';
+        }
+        showSetupError(errorMsg, button, originalText);
     });
+}
+
+// Setup-specific progress polling
+function startSetupProgressPolling(batch_id, progressSteps, button, originalText) {
+    var pollInterval = 2000; // Poll every 2 seconds
+    var pollCount = 0;
+    var maxPolls = 300; // Maximum 10 minutes
+    
+    var poll = function() {
+        pollCount++;
+        
+        if (pollCount > maxPolls) {
+            showSetupError('Setup timeout - jobs may still be running in background', button, originalText);
+            return;
+        }
+        
+        jQuery.post(ajaxurl, {
+            action: 'wc_wms_get_sync_progress',
+            batch_id: batch_id,
+            nonce: (typeof WC_WMS_ADMIN_NONCE !== 'undefined' ? WC_WMS_ADMIN_NONCE : '')
+        }, function(response) {
+            if (response.success) {
+                var progress = response.data;
+                updateSetupProgress(progress, progressSteps);
+                
+                // Continue polling if not finished
+                if (progress.overall_status === 'running' || progress.overall_status === 'pending') {
+                    setTimeout(poll, pollInterval);
+                } else {
+                    // Setup completed
+                    handleSetupCompletion(progress, button, originalText);
+                }
+            } else {
+                // Retry on progress error
+                setTimeout(poll, pollInterval * 2);
+            }
+        }).fail(function() {
+            // Retry on network failure
+            setTimeout(poll, pollInterval * 2);
+        });
+    };
+    
+    // Start polling
+    setTimeout(poll, 1000);
+}
+
+// Update setup-specific progress display
+function updateSetupProgress(progress, progressSteps) {
+    // Update each step based on job status
+    progressSteps.forEach(function(step) {
+        var stepElement = jQuery('#setup-step-' + step.key);
+        var job = progress.jobs.find(j => j.type === step.key);
+        
+        if (job) {
+            var icon, bgColor, textColor = '';
+            switch (job.status) {
+                case 'completed':
+                    icon = '✅';
+                    bgColor = '#d1ecf1';
+                    break;
+                case 'processing':
+                    icon = '🔄';
+                    bgColor = '#fff3cd';
+                    textColor = 'color: #0073aa;';
+                    break;
+                case 'failed':
+                    icon = '❌';
+                    bgColor = '#f8d7da';
+                    textColor = 'color: #721c24;';
+                    break;
+                default:
+                    icon = '⏳';
+                    bgColor = '#f0f0f0';
+            }
+            
+            stepElement.html(icon + ' ' + step.label.replace('...', ' - ' + job.status));
+            stepElement.css({'background': bgColor, 'color': textColor || '#333'});
+        }
+    });
+    
+    // Update button text with progress
+    var button = jQuery('button[onclick="syncEverything()"]');
+    button.text(`🔄 Setup Progress: ${progress.completed_jobs}/${progress.total_jobs} jobs`);
+}
+
+// Handle setup completion
+function handleSetupCompletion(progress, button, originalText) {
+    button.disabled = false;
+    button.textContent = originalText;
+    
+    // Show detailed results
+    var resultsHtml = '<div style="background: ' + (progress.failed_jobs === 0 ? '#d1ecf1' : '#fff3cd') + '; padding: 15px; border-radius: 5px; margin: 10px 0;">';
+    
+    if (progress.failed_jobs === 0) {
+        resultsHtml += '<h4 style="margin: 0 0 10px 0; color: #0f5132;">✅ Setup Completed Successfully!</h4>';
+        resultsHtml += '<p>All ' + progress.total_jobs + ' setup jobs completed successfully. Your WMS integration is now fully configured!</p>';
+    } else {
+        resultsHtml += '<h4 style="margin: 0 0 10px 0; color: #664d03;">⚠️ Setup Completed with Some Issues</h4>';
+        resultsHtml += '<p>' + progress.completed_jobs + ' jobs completed, ' + progress.failed_jobs + ' failed. Basic functionality should still work.</p>';
+    }
+    
+    // Add job summary
+    resultsHtml += '<div style="background: white; padding: 10px; border-radius: 3px; margin: 10px 0;">';
+    resultsHtml += '<h5 style="margin: 0 0 5px 0;">📋 Job Summary:</h5>';
+    resultsHtml += '<ul style="margin: 0; padding-left: 20px; font-size: 14px;">';
+    
+    progress.jobs.forEach(function(job) {
+        var icon = job.status === 'completed' ? '✅' : (job.status === 'failed' ? '❌' : '🔄');
+        resultsHtml += '<li><strong>' + job.title + ':</strong> ' + icon + ' ' + job.status;
+        if (job.error) {
+            resultsHtml += ' <small style="color: #721c24;">(' + job.error + ')</small>';
+        }
+        resultsHtml += '</li>';
+    });
+    
+    resultsHtml += '</ul></div>';
+    
+    // Add next steps
+    if (progress.failed_jobs === 0) {
+        resultsHtml += '<div style="margin-top: 15px; padding: 10px; background: white; border-radius: 3px;">';
+        resultsHtml += '<h5 style="margin: 0 0 5px 0;">🎯 What\'s Next:</h5>';
+        resultsHtml += '<ul style="margin: 0; padding-left: 20px;">';
+        resultsHtml += '<li>Your store is now connected to the WMS</li>';
+        resultsHtml += '<li>Orders will automatically sync to WMS</li>';
+        resultsHtml += '<li>Stock levels will stay synchronized</li>';
+        resultsHtml += '<li>Check the other tabs for advanced configuration</li>';
+        resultsHtml += '</ul></div>';
+    }
+    
+    // Refresh page button
+    resultsHtml += '<div style="text-align: center; margin-top: 15px;">';
+    resultsHtml += '<button type="button" class="button button-primary" onclick="location.reload()" style="padding: 10px 20px;">';
+    resultsHtml += '🔄 Refresh Page to See Updates</button>';
+    resultsHtml += '</div>';
+    
+    resultsHtml += '</div>';
+    
+    jQuery('#results-content').html(resultsHtml);
+    jQuery('#sync-results').show();
+}
+
+// Show setup error
+function showSetupError(errorMsg, button, originalText) {
+    button.disabled = false;
+    button.textContent = originalText;
+    
+    var errorHtml = '<div style="background: #f8d7da; padding: 15px; border-radius: 5px; color: #721c24;">';
+    errorHtml += '<h4 style="margin: 0 0 10px 0;">❌ Setup Failed</h4>';
+    errorHtml += '<p>' + errorMsg + '</p>';
+    errorHtml += '<p><em>Please check your connection and try again.</em></p>';
+    errorHtml += '</div>';
+    
+    jQuery('#results-content').html(errorHtml);
+    jQuery('#sync-results').show();
+    
+    // Update progress steps to show failure
+    jQuery('[id^="setup-step-"]').css('background', '#f8d7da');
 }

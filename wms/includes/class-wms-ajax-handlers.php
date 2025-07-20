@@ -66,6 +66,11 @@ class WC_WMS_Ajax_Handlers {
         
         // Initial sync management
         add_action('wp_ajax_wc_wms_reset_initial_sync', [self::class, 'reset_initial_sync']);
+        
+        // NEW: Queue-based sync system
+        add_action('wp_ajax_wc_wms_start_sync_jobs', [self::class, 'start_sync_jobs']);
+        add_action('wp_ajax_wc_wms_get_sync_progress', [self::class, 'get_sync_progress']);
+        add_action('wp_ajax_wc_wms_process_sync_job', [self::class, 'process_sync_job']);
     }
     
     /**
@@ -1451,6 +1456,72 @@ class WC_WMS_Ajax_Handlers {
             wp_send_json_success($security_check);
         } catch (Exception $e) {
             wp_send_json_error('Security check failed: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Start queue-based sync jobs
+     */
+    public static function start_sync_jobs() {
+        self::verify_request();
+        
+        try {
+            $syncJobsManager = new WC_WMS_Sync_Jobs_Manager();
+            $batch_id = $syncJobsManager->startSyncEverything();
+            
+            wp_send_json_success([
+                'batch_id' => $batch_id,
+                'message' => 'Sync jobs started successfully',
+                'started_at' => current_time('mysql')
+            ]);
+            
+        } catch (Exception $e) {
+            wp_send_json_error('Failed to start sync jobs: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Get sync progress for polling
+     */
+    public static function get_sync_progress() {
+        self::verify_request();
+        
+        $batch_id = sanitize_text_field($_POST['batch_id'] ?? '');
+        
+        if (empty($batch_id)) {
+            wp_send_json_error('Batch ID is required');
+            return;
+        }
+        
+        try {
+            $syncJobsManager = new WC_WMS_Sync_Jobs_Manager();
+            $progress = $syncJobsManager->getSyncProgress($batch_id);
+            
+            wp_send_json_success($progress);
+            
+        } catch (Exception $e) {
+            wp_send_json_error('Failed to get sync progress: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Process next sync job (for manual triggering)
+     */
+    public static function process_sync_job() {
+        self::verify_request();
+        
+        try {
+            $syncJobsManager = new WC_WMS_Sync_Jobs_Manager();
+            $result = $syncJobsManager->processNextJob();
+            
+            if ($result === null) {
+                wp_send_json_success(['message' => 'No pending jobs to process']);
+            } else {
+                wp_send_json_success($result);
+            }
+            
+        } catch (Exception $e) {
+            wp_send_json_error('Failed to process sync job: ' . $e->getMessage());
         }
     }
     
