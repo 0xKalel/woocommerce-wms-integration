@@ -38,6 +38,16 @@ class WC_WMS_Order_Sync_Manager {
     private static $syncInProgress = false;
     
     /**
+     * Store suspended product sync hooks
+     */
+    private $suspendedProductHooks = [];
+    
+    /**
+     * Hook blocker instance for nuclear option
+     */
+    private $hookBlocker;
+    
+    /**
      * WMS Order Status to WooCommerce Status Mapping - SINGLE SOURCE OF TRUTH
      */
     const STATUS_MAPPING = [
@@ -72,6 +82,9 @@ class WC_WMS_Order_Sync_Manager {
         $this->client = $client;
         $this->orderStateManager = $client->orderStateManager();
         $this->productSyncManager = new WC_WMS_Product_Sync_Manager($client);
+        
+        // Initialize hook blocker for nuclear option
+        $this->hookBlocker = WC_WMS_Hook_Blocker::getInstance();
     }
     
     /**
@@ -230,11 +243,14 @@ class WC_WMS_Order_Sync_Manager {
         ]);
         
         try {
-            // PREVENT CIRCULAR SYNC WITH SIMPLE FLAG
+            // PREVENT CIRCULAR SYNC WITH MULTIPLE LAYERS OF PROTECTION
             $this->markSyncInProgress();
             
-            // Suspend hooks to prevent circular sync (existing protection)
+            // Layer 1: Suspend specific order hooks
             $this->orderStateManager->suspendOrderHooks($order);
+            
+            // Layer 2: Activate nuclear hook blocking for maximum protection
+            $this->hookBlocker->activateGlobalBlocking();
             
             $result = [
                 'order_id' => $orderId,
@@ -293,14 +309,26 @@ class WC_WMS_Order_Sync_Manager {
             ];
             
         } finally {
-            // Always restore hooks and clear sync flag
+            // Always restore hooks and clear sync flag - CRITICAL CLEANUP
+            
+            // Layer 2: Deactivate nuclear hook blocking
+            $this->hookBlocker->deactivateGlobalBlocking();
+            
+            // Layer 1: Restore specific order hooks
             $this->orderStateManager->restoreOrderHooks($order);
+            
+            // Clear sync flag
             $this->markSyncCompleted();
+            
+            // Emergency cleanup for any remaining suspended product hooks
+            if (!empty($this->suspendedProductHooks)) {
+                $this->restoreProductSyncHooks();
+            }
         }
     }
     
     /**
-     * Process order lines - SINGLE IMPLEMENTATION
+     * Process order lines - SINGLE IMPLEMENTATION WITH ISOLATED PRODUCT SYNC
      */
     public function processOrderLines(WC_Order $order, array $orderLines): array {
         $this->client->logger()->info('Processing order lines from WMS', [
@@ -315,32 +343,42 @@ class WC_WMS_Order_Sync_Manager {
             'errors' => []
         ];
         
-        foreach ($orderLines as $lineIndex => $line) {
-            try {
-                $lineResult = $this->processSingleOrderLine($order, $line, $lineIndex);
-                
-                if ($lineResult['success']) {
-                    if ($lineResult['action'] === 'added') {
-                        $result['items_added']++;
-                    } elseif ($lineResult['action'] === 'updated') {
-                        $result['items_updated']++;
-                    }
-                } else {
-                    $result['items_skipped']++;
-                    $result['errors'][] = $lineResult['error'];
-                }
-                
-            } catch (Exception $e) {
-                $result['errors'][] = [
-                    'line_index' => $lineIndex,
-                    'error' => $e->getMessage()
-                ];
-                $result['items_skipped']++;
-            }
-        }
+        // ISOLATED PRODUCT SYNC - Prevent product updates from triggering order hooks
+        $this->suspendProductSyncHooks();
         
-        // Recalculate order totals
-        $order->calculate_totals();
+        try {
+            foreach ($orderLines as $lineIndex => $line) {
+                try {
+                    $lineResult = $this->processSingleOrderLine($order, $line, $lineIndex);
+                    
+                    if ($lineResult['success']) {
+                        if ($lineResult['action'] === 'added') {
+                            $result['items_added']++;
+                        } elseif ($lineResult['action'] === 'updated') {
+                            $result['items_updated']++;
+                        }
+                    } else {
+                        $result['items_skipped']++;
+                        $result['errors'][] = $lineResult['error'];
+                    }
+                    
+                } catch (Exception $e) {
+                    $result['errors'][] = [
+                        'line_index' => $lineIndex,
+                        'error' => $e->getMessage()
+                    ];
+                    $result['items_skipped']++;
+                }
+            }
+            
+            // Recalculate order totals ONCE after all products are processed
+            remove_all_actions('woocommerce_order_object_updated_props');
+            $order->calculate_totals();
+            
+        } finally {
+            // Always restore product sync hooks
+            $this->restoreProductSyncHooks();
+        }
         
         $this->client->logger()->info('Order lines processing completed', [
             'order_id' => $order->get_id(),
@@ -348,6 +386,65 @@ class WC_WMS_Order_Sync_Manager {
         ]);
         
         return $result;
+    }
+    
+    /**
+     * Suspend product sync hooks to prevent them from triggering order updates
+     */
+    private function suspendProductSyncHooks(): void {
+        // Store original hooks for restoration
+        $this->suspendedProductHooks = [];
+        
+        global $wp_filter;
+        
+        $productHooksToSuspend = [
+            'woocommerce_update_product',
+            'woocommerce_process_product_meta',
+            'woocommerce_product_object_updated_props',
+            'woocommerce_new_product',
+            'woocommerce_before_single_object_save',
+            'woocommerce_after_single_object_save',
+            'save_post',
+            'wp_insert_post_data',
+            'updated_post_meta',
+            'added_post_meta',
+        ];
+        
+        foreach ($productHooksToSuspend as $hook) {
+            if (isset($wp_filter[$hook])) {
+                $this->suspendedProductHooks[$hook] = $wp_filter[$hook];
+                $wp_filter[$hook] = new WP_Hook();
+            }
+        }
+        
+        $this->client->logger()->debug('Product sync hooks suspended', [
+            'suspended_hooks' => array_keys($this->suspendedProductHooks),
+            'count' => count($this->suspendedProductHooks)
+        ]);
+    }
+    
+    /**
+     * Restore product sync hooks
+     */
+    private function restoreProductSyncHooks(): void {
+        if (empty($this->suspendedProductHooks)) {
+            return;
+        }
+        
+        global $wp_filter;
+        
+        foreach ($this->suspendedProductHooks as $hook => $hookObject) {
+            if ($hookObject instanceof WP_Hook) {
+                $wp_filter[$hook] = $hookObject;
+            }
+        }
+        
+        $this->client->logger()->debug('Product sync hooks restored', [
+            'restored_hooks' => array_keys($this->suspendedProductHooks),
+            'count' => count($this->suspendedProductHooks)
+        ]);
+        
+        $this->suspendedProductHooks = [];
     }
     
     /**

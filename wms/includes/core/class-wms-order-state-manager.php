@@ -371,24 +371,42 @@ class WC_WMS_Order_State_Manager {
             return;
         }
         
-        $this->suspendedHooks[$orderId] = [
-            'order_status_changed' => [],
-            'woocommerce_order_status_changed' => [],
-            'woocommerce_new_order' => [],
-            'woocommerce_order_actions' => [],
-            'woocommerce_process_shop_order_meta' => [],
-            'save_post' => []
-        ];
+        $this->suspendedHooks[$orderId] = [];
         
         global $wp_filter;
         
-        // Temporarily remove problematic hooks that could cause recursion
+        // COMPREHENSIVE hook suspension - includes product-related hooks that trigger order updates
         $hooksToSuspend = [
+            // Order-specific hooks
             'woocommerce_order_status_changed',
             'woocommerce_new_order',
             'woocommerce_order_actions',
             'woocommerce_process_shop_order_meta',
-            'save_post'
+            'woocommerce_order_object_updated_props',
+            'woocommerce_update_order',
+            'woocommerce_order_item_meta_saved',
+            'woocommerce_calculate_totals',
+            
+            // Product hooks that can trigger order updates
+            'woocommerce_update_product',
+            'woocommerce_process_product_meta',
+            'woocommerce_product_object_updated_props',
+            'woocommerce_new_product',
+            
+            // WordPress core hooks
+            'save_post',
+            'wp_insert_post_data',
+            'clean_post_cache',
+            'updated_post_meta',
+            'added_post_meta',
+            
+            // WooCommerce CRUD hooks
+            'woocommerce_before_single_object_save',
+            'woocommerce_after_single_object_save',
+            
+            // Third-party plugin hooks that commonly interfere
+            'elementor/frontend/before_render',
+            'wpseo_save_post',
         ];
         
         foreach ($hooksToSuspend as $hook) {
@@ -398,9 +416,13 @@ class WC_WMS_Order_State_Manager {
             }
         }
         
+        // Add global hook filter to catch any hooks we missed
+        add_filter('pre_do_action', [$this, 'globalHookFilter'], 999, 2);
+        
         $this->logger->debug('Order hooks suspended', [
             'order_id' => $orderId,
-            'suspended_hooks' => array_keys($this->suspendedHooks[$orderId])
+            'suspended_hooks' => array_keys($this->suspendedHooks[$orderId]),
+            'total_suspended' => count($this->suspendedHooks[$orderId])
         ]);
     }
     
@@ -424,13 +446,51 @@ class WC_WMS_Order_State_Manager {
             }
         }
         
+        // Remove global hook filter
+        remove_filter('pre_do_action', [$this, 'globalHookFilter'], 999);
+        
         $this->logger->debug('Order hooks restored', [
             'order_id' => $orderId,
-            'restored_hooks' => array_keys($this->suspendedHooks[$orderId])
+            'restored_hooks' => array_keys($this->suspendedHooks[$orderId]),
+            'total_restored' => count($this->suspendedHooks[$orderId])
         ]);
         
         // Clean up suspended hooks storage
         unset($this->suspendedHooks[$orderId]);
+    }
+    
+    /**
+     * Global hook filter to catch any hooks that weren't explicitly suspended
+     */
+    public function globalHookFilter($result, $hook_name) {
+        // Only filter during active sync operations
+        if (!WC_WMS_Order_Sync_Manager::isSyncInProgress()) {
+            return $result;
+        }
+        
+        // Block WooCommerce and WordPress hooks that could interfere with sync
+        $blockedPatterns = [
+            'woocommerce_',
+            'wc_',
+            'save_post',
+            'wp_insert_post',
+            'updated_post_meta',
+            'added_post_meta',
+            'clean_post_cache',
+            'transition_post_status'
+        ];
+        
+        foreach ($blockedPatterns as $pattern) {
+            if (strpos($hook_name, $pattern) !== false) {
+                $this->logger->debug('Global hook filter blocked hook during sync', [
+                    'hook' => $hook_name,
+                    'pattern_matched' => $pattern
+                ]);
+                return false; // Block the hook execution
+            }
+        }
+        
+        return $result;
     }
     
     /**

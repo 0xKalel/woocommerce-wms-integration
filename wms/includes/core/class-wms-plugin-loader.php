@@ -59,6 +59,7 @@ class WC_WMS_Plugin_Loader {
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-queue-manager.php';
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-webhook-queue-manager.php';
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-order-state-manager.php';
+        include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-hook-blocker.php';
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-database-manager.php';
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-cron-manager.php';
         include_once WC_WMS_INTEGRATION_PLUGIN_DIR . 'includes/core/class-wms-cron-handler.php';
