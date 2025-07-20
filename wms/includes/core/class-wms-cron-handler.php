@@ -429,6 +429,19 @@ class WC_WMS_Cron_Handler {
             
             foreach ($recentShipments as $shipment) {
                 try {
+                    // DEBUG: Log shipment data type and structure before processing
+                    error_log('WMS Cron Shipment Debug: Processing shipment - Type: ' . gettype($shipment) . ', Data: ' . print_r($shipment, true));
+                    
+                    // Ensure $shipment is an array before passing to processShipmentWebhook
+                    if (!is_array($shipment)) {
+                        error_log('WMS Cron Shipment Error: Expected array, got ' . gettype($shipment) . ' - Value: ' . print_r($shipment, true));
+                        $errors[] = [
+                            'shipment' => 'Invalid data type: ' . gettype($shipment),
+                            'error' => 'Expected array, got ' . gettype($shipment)
+                        ];
+                        continue;
+                    }
+                    
                     // Process shipment webhook data to update orders
                     $result = $shipmentIntegrator->processShipmentWebhook($shipment);
                     

@@ -154,19 +154,52 @@ class WC_WMS_Ajax_Handlers {
     public static function sync_everything() {
         self::verify_request();
         
+        // Monitor memory usage
+        $initial_memory = memory_get_usage(true);
+        $memory_limit = wp_convert_hr_to_bytes(ini_get('memory_limit'));
+        
+        $results = [];
+        $errors = [];
+        $setup_success = true;
+        
         try {
-            $results = [];
-            
             // Get services from container - use only new clean architecture
             $client = WC_WMS_Service_Container::getWmsClient();
             $productSync = WC_WMS_Service_Container::getProductSync();
             $customerSync = WC_WMS_Service_Container::getCustomerSync();
             
-            // Test connection using WMS client
-            $connection_test = $client->testConnection();
-            $results['connection'] = $connection_test['success'] ? 'Success' : 'Failed: ' . $connection_test['message'];
+            // Memory check helper function
+            $check_memory = function($operation) use ($memory_limit, &$errors) {
+                $current_memory = memory_get_usage(true);
+                $memory_percent = ($current_memory / $memory_limit) * 100;
+                
+                if ($memory_percent > 85) {
+                    $errors[] = sprintf('High memory usage after %s: %.1f%% (%s/%s)', 
+                        $operation, $memory_percent, 
+                        size_format($current_memory), size_format($memory_limit)
+                    );
+                    return false;
+                }
+                return true;
+            };
             
-            // Sync shipping methods using shipment integrator
+            // Test connection using WMS client - CRITICAL STEP
+            try {
+                $connection_test = $client->testConnection();
+                $results['connection'] = $connection_test['success'] ? 'Success' : 'Failed: ' . $connection_test['message'];
+                
+                if (!$connection_test['success']) {
+                    $setup_success = false;
+                    $errors[] = 'Connection test failed: ' . $connection_test['message'];
+                }
+                $check_memory('connection test');
+            } catch (Exception $e) {
+                $results['connection'] = 'Failed: ' . $e->getMessage();
+                $errors[] = 'Connection error: ' . $e->getMessage();
+                $setup_success = false;
+            }
+            
+            // Sync shipping methods using shipment integrator - NON-CRITICAL
             try {
                 $shipping_result = $client->shipmentIntegrator()->syncShippingMethods();
                 if (!is_wp_error($shipping_result)) {
@@ -174,14 +207,17 @@ class WC_WMS_Ajax_Handlers {
                     update_option('wc_wms_shipping_methods_synced_at', current_time('mysql'));
                 } else {
                     $results['shipping_methods'] = 'Failed: ' . $shipping_result->get_error_message();
+                    $errors[] = 'Shipping methods: ' . $shipping_result->get_error_message();
                 }
             } catch (Exception $e) {
                 $results['shipping_methods'] = 'Failed: ' . $e->getMessage();
+                $errors[] = 'Shipping methods error: ' . $e->getMessage();
+                // Don't mark setup as failed for shipping methods
             }
+            $check_memory('shipping methods sync');
             
-            // Sync location types
+            // Sync location types - NON-CRITICAL
             try {
-                $client = WC_WMS_Service_Container::getWmsClient();
                 $location_result = $client->locationTypes()->syncLocationTypes();
                 if ($location_result['success']) {
                     $results['location_types'] = sprintf('%d types (%d pickable, %d transport)', 
@@ -190,14 +226,16 @@ class WC_WMS_Ajax_Handlers {
                         $location_result['transport_count']);
                 } else {
                     $results['location_types'] = 'Failed to sync location types';
+                    $errors[] = 'Location types sync failed';
                 }
             } catch (Exception $e) {
                 $results['location_types'] = 'Failed: ' . $e->getMessage();
+                $errors[] = 'Location types error: ' . $e->getMessage();
+                // Don't mark setup as failed for location types
             }
             
-            // Register webhooks (delete existing first, then register fresh)
+            // Register webhooks (delete existing first, then register fresh) - CRITICAL
             try {
-                $client = WC_WMS_Service_Container::getWmsClient();
                 $webhook_result = $client->webhookIntegrator()->registerAllWebhooks();
                 
                 if ($webhook_result['success']) {
@@ -212,14 +250,19 @@ class WC_WMS_Ajax_Handlers {
                     }
                 } else {
                     $results['webhooks'] = 'Failed: ' . ($webhook_result['error'] ?? 'Unknown error');
+                    $errors[] = 'Webhooks registration failed: ' . ($webhook_result['error'] ?? 'Unknown error');
+                    $setup_success = false;
                 }
             } catch (Exception $e) {
                 $results['webhooks'] = 'Failed: ' . $e->getMessage();
+                $errors[] = 'Webhooks error: ' . $e->getMessage();
+                $setup_success = false;
             }
+            $check_memory('webhook registration');
             
-            // Sync products - Import articles FROM WMS
+            // Sync products - Import articles FROM WMS (reduced batch size)
             try {
-                $product_result = $productSync->import_articles_from_wms(['limit' => 100]);
+                $product_result = $productSync->import_articles_from_wms(['limit' => 25]);
                 if (is_wp_error($product_result)) {
                     $results['products'] = 'Failed: ' . $product_result->get_error_message();
                 } else {
@@ -243,9 +286,9 @@ class WC_WMS_Ajax_Handlers {
                 $results['products'] = 'Failed: ' . $e->getMessage();
             }
             
-            // Sync stock levels
+            // Sync stock levels (reduced batch size)
             try {
-                $stock_result = $client->stockIntegrator()->syncAllStock(50); // Smaller batch size
+                $stock_result = $client->stockIntegrator()->syncAllStock(25); // Reduced from 50
                 $results['stock'] = sprintf('%d processed, %d updated', 
                     $stock_result['processed'] ?? 0,
                     $stock_result['updated'] ?? 0);
@@ -269,8 +312,8 @@ class WC_WMS_Ajax_Handlers {
                 $results['stock'] = 'Failed: ' . $e->getMessage();
             }
             
-            // Import customers
-            $customer_result = $customerSync->import_customers_from_wms(['limit' => 50]);
+            // Import customers (reduced batch size)
+            $customer_result = $customerSync->import_customers_from_wms(['limit' => 25]);
             if (is_wp_error($customer_result)) {
                 $results['customers'] = 'Failed: ' . $customer_result->get_error_message();
             } else {
@@ -326,12 +369,12 @@ class WC_WMS_Ajax_Handlers {
                 ]);
             }
             
-            // Sync inbounds from WMS
+            // Sync inbounds from WMS (reduced batch size)
             try {
                 $inboundService = WC_WMS_Service_Container::getInboundService();
                 
                 $params = [
-                    'limit' => 50,
+                    'limit' => 25, // Reduced from 50
                     'from' => date('Y-m-d', strtotime('-30 days')),
                     'sort' => 'inboundDate',
                     'direction' => 'desc'
@@ -367,8 +410,8 @@ class WC_WMS_Ajax_Handlers {
                 $wmsClient = WC_WMS_Service_Container::getWmsClient();
                 $shipmentIntegrator = $wmsClient->shipmentIntegrator();
                 
-                // Use the existing getRecentShipments method
-                $shipments = $shipmentIntegrator->getRecentShipments(3, 50);
+                // Use the existing getRecentShipments method (reduced batch size)
+                $shipments = $shipmentIntegrator->getRecentShipments(3, 25); // Reduced from 50
                 
                 if (empty($shipments)) {
                     $results['shipments'] = 'No recent shipments found';
@@ -378,6 +421,15 @@ class WC_WMS_Ajax_Handlers {
                     
                     foreach ($shipments as $shipment) {
                         try {
+                            // DEBUG: Log shipment data type and structure before processing
+                            error_log('WMS Shipment Debug (Dashboard): Processing shipment - Type: ' . gettype($shipment) . ', Data: ' . print_r($shipment, true));
+                            
+                            // Ensure $shipment is an array before passing to processShipmentWebhook
+                            if (!is_array($shipment)) {
+                                error_log('WMS Shipment Error (Dashboard): Expected array, got ' . gettype($shipment) . ' - Value: ' . print_r($shipment, true));
+                                continue; // Skip this iteration
+                            }
+                            
                             // Use the webhook processor to update orders
                             $result = $shipmentIntegrator->processShipmentWebhook($shipment);
                             if ($result['success']) {
@@ -403,16 +455,53 @@ class WC_WMS_Ajax_Handlers {
             // Stock sync via integrators
             $results['note'] = 'Stock sync included in process above';
             
-            // Mark initial sync as completed
+            // Mark initial sync as completed (even if some components failed)
             update_option('wc_wms_initial_sync_completed', true);
             update_option('wc_wms_initial_sync_completed_at', current_time('mysql'));
             
-            // Log the completion
-            error_log('WMS Integration: Initial sync completed successfully - automatic processes now enabled');
+            // Final memory check and reporting
+            $final_memory = memory_get_usage(true);
+            $memory_used = $final_memory - $initial_memory;
             
-            wp_send_json_success($results);
+            // Prepare final response
+            $response = [
+                'results' => $results,
+                'setup_success' => $setup_success,
+                'errors' => $errors,
+                'error_count' => count($errors),
+                'timestamp' => current_time('mysql'),
+                'memory_stats' => [
+                    'initial' => size_format($initial_memory),
+                    'final' => size_format($final_memory),
+                    'used' => size_format($memory_used),
+                    'limit' => size_format($memory_limit),
+                    'peak' => size_format(memory_get_peak_usage(true))
+                ]
+            ];
+            
+            // Log the completion with status
+            if ($setup_success) {
+                error_log('WMS Integration: Initial sync completed successfully - automatic processes now enabled');
+                $response['message'] = 'Setup completed successfully! All critical components are working.';
+            } else {
+                error_log('WMS Integration: Initial sync completed with errors - check results for details');
+                $response['message'] = 'Setup completed with some issues. Check individual component results.';
+            }
+            
+            // Always send success response (setup continues even if some components fail)
+            wp_send_json_success($response);
+            
         } catch (Exception $e) {
-            wp_send_json_error('Sync everything failed: ' . $e->getMessage());
+            // Log the critical error
+            error_log('WMS Integration: Critical setup error - ' . $e->getMessage());
+            
+            // Send error response only for critical failures
+            wp_send_json_error([
+                'message' => 'Critical setup error: ' . $e->getMessage(),
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine()
+            ]);
         }
     }
     
@@ -1302,6 +1391,15 @@ class WC_WMS_Ajax_Handlers {
             
             foreach ($shipments as $shipment) {
                 try {
+                    // DEBUG: Log shipment data type and structure before processing
+                    error_log('WMS Shipment Debug: Processing shipment - Type: ' . gettype($shipment) . ', Data: ' . print_r($shipment, true));
+                    
+                    // Ensure $shipment is an array before passing to processShipmentWebhook
+                    if (!is_array($shipment)) {
+                        error_log('WMS Shipment Error: Expected array, got ' . gettype($shipment) . ' - Value: ' . print_r($shipment, true));
+                        continue; // Skip this iteration
+                    }
+                    
                     // Use the webhook processor to update orders
                     $result = $shipmentIntegrator->processShipmentWebhook($shipment);
                     if ($result['success']) {

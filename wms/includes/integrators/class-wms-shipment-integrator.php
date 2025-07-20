@@ -131,6 +131,18 @@ class WC_WMS_Shipment_Integrator implements WC_WMS_Shipment_Integrator_Interface
      * Process shipment webhook data
      */
     public function processShipmentWebhook(array $shipmentData): array {
+        // DEFENSIVE TYPE CHECKING: Prevent TypeError from invalid data types
+        if (!is_array($shipmentData)) {
+            $this->client->logger()->error('processShipmentWebhook received invalid data type', [
+                'received_type' => gettype($shipmentData),
+                'received_value' => $shipmentData,
+                'expected_type' => 'array',
+                'backtrace' => debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 5)
+            ]);
+            
+            throw new TypeError('processShipmentWebhook expects array parameter, received ' . gettype($shipmentData));
+        }
+        
         $this->client->logger()->info('Processing shipment webhook through integrator', [
             'shipment_id' => $shipmentData['id'] ?? 'unknown',
             'order_external_reference' => $shipmentData['order_external_reference'] ?? 'unknown'

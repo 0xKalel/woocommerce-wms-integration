@@ -398,17 +398,28 @@ function importEverything() {
     }, function(response) {
         if (response.success) {
             var result = response.data;
+            var results = result.results || result; // Handle both new and old response structures
+            
             var message = isInitialSync ? 
                 '🚀 Initial sync completed successfully!\n\nAutomatic synchronization processes are now enabled.\n\n' :
                 'Import from WMS completed:\n';
-            message += '• Connection: ' + (result.connection ? 'OK' : 'Failed') + '\n';
-            message += '• Shipping Methods: ' + (result.shipping_methods || 'Done') + '\n';
-            message += '• Articles: ' + (result.articles || 'Done') + '\n';
-            message += '• Customers: ' + (result.customers || 'Done') + '\n';
-            message += '• Orders: ' + (result.orders || 'Done') + '\n';
-            message += '• Inbounds: ' + (result.inbounds || 'Done') + '\n';
-            message += '• Shipments: ' + (result.shipments || 'Done') + '\n';
-            message += '• Stock: ' + (result.stock || 'Done') + '\n';
+            message += '• Connection: ' + (results.connection ? 'OK' : 'Failed') + '\n';
+            message += '• Shipping Methods: ' + (results.shipping_methods || 'Done') + '\n';
+            message += '• Articles: ' + (results.articles || results.products || 'Done') + '\n';
+            message += '• Customers: ' + (results.customers || 'Done') + '\n';
+            message += '• Orders: ' + (results.orders || 'Done') + '\n';
+            message += '• Inbounds: ' + (results.inbounds || 'Done') + '\n';
+            message += '• Shipments: ' + (results.shipments || 'Done') + '\n';
+            message += '• Stock: ' + (results.stock || 'Done') + '\n';
+            
+            // Show additional info if available
+            if (result.error_count && result.error_count > 0) {
+                message += '\n⚠️  Note: Some components had issues (' + result.error_count + ' warnings)';
+                message += '\nOverall Status: ' + (result.setup_success ? 'Success' : 'Partial Success');
+            } else {
+                message += '\n✅ All components completed successfully!';
+            }
+            
             alert(message);
             
             // Reload page after initial sync to update UI
@@ -416,8 +427,33 @@ function importEverything() {
                 window.location.reload();
             }
         } else {
-            alert('Import failed: ' + (response.data || 'Unknown error'));
+            var errorMsg = 'Import failed: ';
+            if (response.data && response.data.message) {
+                errorMsg += response.data.message;
+            } else {
+                errorMsg += (response.data || 'Unknown error');
+            }
+            alert(errorMsg);
         }
+    }).fail(function(xhr, status, error) {
+        var errorMsg = 'Sync request failed: ' + error;
+        if (xhr.responseText) {
+            try {
+                var errorResponse = JSON.parse(xhr.responseText);
+                if (errorResponse.data && errorResponse.data.message) {
+                    errorMsg += '\nDetails: ' + errorResponse.data.message;
+                }
+            } catch (e) {
+                errorMsg += '\nResponse: ' + xhr.responseText.substring(0, 200);
+            }
+        }
+        alert(errorMsg);
+        console.error('Sync Everything Failed:', {
+            status: status,
+            error: error,
+            responseText: xhr.responseText,
+            statusCode: xhr.status
+        });
     }).always(function() {
         button.disabled = false;
         button.textContent = '🔄 Import Everything from WMS';
