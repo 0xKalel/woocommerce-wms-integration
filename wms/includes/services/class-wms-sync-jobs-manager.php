@@ -314,7 +314,37 @@ class WC_WMS_Sync_Jobs_Manager {
                 return $result;
                 
             case 'location_types':
-                return $this->wmsClient->locationTypes()->syncLocationTypes();
+                try {
+                    $result = $this->wmsClient->locationTypes()->syncLocationTypes();
+                    if (is_wp_error($result)) {
+                        // Check if it's a permission error (403 Forbidden)
+                        if ($result->get_error_code() === 'forbidden' || strpos($result->get_error_message(), '403') !== false) {
+                            $this->logger->warning('Location types sync skipped - insufficient permissions', [
+                                'error' => $result->get_error_message()
+                            ]);
+                            return [
+                                'success' => true,
+                                'message' => 'Location types sync skipped - insufficient API permissions',
+                                'skipped' => true
+                            ];
+                        }
+                        throw new Exception($result->get_error_message());
+                    }
+                    return $result;
+                } catch (Exception $e) {
+                    // Check if it's a permission error
+                    if (strpos($e->getMessage(), 'Forbidden') !== false || strpos($e->getMessage(), '403') !== false) {
+                        $this->logger->warning('Location types sync skipped - insufficient permissions', [
+                            'error' => $e->getMessage()
+                        ]);
+                        return [
+                            'success' => true,
+                            'message' => 'Location types sync skipped - insufficient API permissions',
+                            'skipped' => true
+                        ];
+                    }
+                    throw $e;
+                }
                 
             case 'articles_import':
                 $productSync = WC_WMS_Service_Container::getProductSync();
@@ -471,5 +501,18 @@ class WC_WMS_Sync_Jobs_Manager {
         ));
         
         return $deleted ?: 0;
+    }
+    
+    /**
+     * Check if there are any pending sync jobs
+     */
+    public function hasPendingJobs(): bool {
+        global $wpdb;
+        
+        $count = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM {$this->jobs_table} WHERE status IN ('pending', 'processing')"
+        ));
+        
+        return intval($count) > 0;
     }
 }

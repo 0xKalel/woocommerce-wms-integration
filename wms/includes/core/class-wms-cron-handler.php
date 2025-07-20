@@ -654,6 +654,23 @@ class WC_WMS_Cron_Handler {
                 }
             }
             
+            // Check if initial sync should be marked as complete
+            if (!get_option('wc_wms_initial_sync_completed', false)) {
+                // Check if there are no more pending sync jobs
+                if (!$syncJobsManager->hasPendingJobs()) {
+                    // Check if we have successfully completed core sync components
+                    $has_webhooks = get_option('wc_wms_registered_webhooks', []);
+                    $has_shipping_methods = get_option('wc_wms_shipping_methods', []);
+                    $has_connection = get_option('wc_wms_connection_status') === 'success';
+                    
+                    if (!empty($has_webhooks) && !empty($has_shipping_methods) && $has_connection) {
+                        update_option('wc_wms_initial_sync_completed', true);
+                        update_option('wc_wms_initial_sync_completed_at', current_time('mysql'));
+                        error_log('WMS Integration: Initial sync marked as completed - webhook processing now enabled');
+                    }
+                }
+            }
+            
         } catch (Exception $e) {
             error_log('WMS Integration: Sync jobs processing failed: ' . $e->getMessage());
         }
