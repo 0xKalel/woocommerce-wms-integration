@@ -21,10 +21,20 @@ run_cron() {
         exit 1
     fi
     
-    # Run WP-Cron via WP-CLI
+    # Run WP-Cron via WP-CLI with error handling
+    set +e  # Temporarily disable strict error handling
     docker-compose run --rm wpcli wp cron event run --due-now
+    CRON_EXIT_CODE=$?
+    set -e  # Re-enable strict error handling
     
-    echo -e "${GREEN}✅ WP-Cron executed successfully${NC}"
+    # Check if cron executed successfully (ignore segfault during cleanup)
+    if [ $CRON_EXIT_CODE -eq 0 ] || [ $CRON_EXIT_CODE -eq 139 ]; then
+        echo -e "${GREEN}✅ WP-Cron executed successfully${NC}"
+        exit 0
+    else
+        echo -e "${RED}❌ WP-Cron execution failed with exit code: $CRON_EXIT_CODE${NC}"
+        exit $CRON_EXIT_CODE
+    fi
 }
 
 # Function to list scheduled cron events

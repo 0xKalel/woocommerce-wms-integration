@@ -25,7 +25,9 @@ help:
 	@echo ""
 	@echo "Cron Commands:"
 	@echo "make cron-status     - Check WP-Cron status"
-	@echo "make cron-run        - Manually run due cron events"
+	@echo "make cron-run        - Manually run due cron events (may show segfault)"
+	@echo "make cron-run-safe   - Run cron via existing container (recommended)"
+	@echo "make cron-run-clean  - Run cron with explicit cleanup"
 	@echo "make cron-list       - List scheduled cron events"
 	@echo "make cron-logs       - View cron execution logs"
 	@echo ""
@@ -150,6 +152,16 @@ cron-status:
 cron-run:
 	@chmod +x scripts/wp-cron.sh
 	@./scripts/wp-cron.sh run
+
+# Alternative cron run using existing cron container (avoids segfault)
+cron-run-safe:
+	@echo "🔄 Running cron via existing cron container..."
+	@docker-compose exec cron /usr/local/bin/wp cron event run --due-now --path=/var/www/html --allow-root
+
+# Run cron with explicit cleanup to prevent segfault
+cron-run-clean:
+	@echo "🔄 Running WordPress cron with explicit cleanup..."
+	@docker-compose run --rm wpcli bash -c "wp cron event run --due-now && exit 0"
 
 cron-list:
 	@chmod +x scripts/wp-cron.sh
